@@ -33,6 +33,33 @@ const tencentcloud = require('tencentcloud-sdk-nodejs')
 // ===================== Constants =====================
 
 const TCR_DOMAIN = 'ccr.ccs.tencentyun.com'
+
+// Resolve docker-compatible CLI: prefer docker, fallback to podman
+function resolveDockerCmd() {
+  try {
+    execSync('docker info', { stdio: 'pipe' })
+    return 'docker'
+  } catch {
+    // docker not available
+  }
+  try {
+    execSync('podman info', { stdio: 'pipe' })
+    // Expose podman socket via DOCKER_HOST so login/push work correctly
+    try {
+      const socket = execSync('podman machine inspect --format "{{.ConnectionInfo.PodmanSocket.Path}}"', { stdio: 'pipe' }).toString().trim()
+      if (socket && !process.env.DOCKER_HOST) {
+        process.env.DOCKER_HOST = `unix://${socket}`
+      }
+    } catch {
+      // podman machine inspect failed (native Linux podman), ignore
+    }
+    return 'podman'
+  } catch {
+    return null
+  }
+}
+
+const DOCKER_CMD = resolveDockerCmd()
 const ENV_FILE = resolve(process.cwd(), '.env.local')
 const CLOUDBASE_AUTH_FILE = resolve(homedir(), '.config/.cloudbase/auth.json')
 const DEFAULT_NAMESPACE_PREFIX = 'cloudbase-vibecoding'
@@ -527,24 +554,23 @@ async function resetTcrPassword(_client, _password) {
 // ===================== Docker Functions =====================
 
 function checkDocker() {
-  try {
-    execSync('docker info', { stdio: 'pipe' })
-    return true
-  } catch {
-    return false
-  }
+  return DOCKER_CMD !== null
 }
 
 function dockerLogin(domain, username, password) {
-  log('Logging in to TCR registry...')
+  if (!DOCKER_CMD) {
+    log('Docker / Podman 未安装或未运行', 'error')
+    return false
+  }
+  log(`Logging in to TCR registry via ${DOCKER_CMD}...`)
 
   try {
-    // Use docker login with password-stdin for security
-    runCommand(`echo '${password}' | docker login ${domain} --username ${username} --password-stdin`, true)
-    log('Docker login successful', 'success')
+    // Use docker/podman login with password-stdin for security
+    runCommand(`echo '${password}' | ${DOCKER_CMD} login ${domain} --username ${username} --password-stdin`, true)
+    log('Login successful', 'success')
     return true
   } catch (error) {
-    log('Docker login failed', 'error')
+    log('Login failed', 'error')
     log('密码可能不正确，请前往 TCR 控制台重置：', 'warn')
     log('  https://console.cloud.tencent.com/tcr/?rid=1', 'info')
     log('  → 找到广州地域的个人实例 → 点击「更多」→「重置登录密码」', 'info')
@@ -556,7 +582,7 @@ function pullImage(image) {
   log(`Pulling image '${image}'...`)
 
   try {
-    runCommand(`docker pull ${image}`)
+    runCommand(`${DOCKER_CMD} pull ${image}`)
     log(`Image pulled successfully`, 'success')
     return true
   } catch (error) {
@@ -569,7 +595,7 @@ function tagImage(sourceImage, targetImage) {
   log(`Tagging image '${sourceImage}' -> '${targetImage}'...`)
 
   try {
-    runCommand(`docker tag ${sourceImage} ${targetImage}`, true)
+    runCommand(`${DOCKER_CMD} tag ${sourceImage} ${targetImage}`, true)
     log('Image tagged successfully', 'success')
     return true
   } catch (error) {
@@ -582,7 +608,7 @@ function pushImage(image) {
   log(`Pushing image '${image}'...`)
 
   try {
-    runCommand(`docker push ${image}`)
+    runCommand(`${DOCKER_CMD} push ${image}`)
     log(`Image pushed successfully`, 'success')
     return true
   } catch (error) {
@@ -963,13 +989,13 @@ async function setupTcr(config) {
   // Step 6 (was 5): Check local image, pull only if not present
   log(`Checking for local image '${config.localImage}'...`)
   try {
-    runCommand(`docker inspect ${config.localImage}`, true)
+    runCommand(`${DOCKER_CMD} inspect ${config.localImage}`, true)
     log('Local image found, skipping pull', 'success')
   } catch {
     log('Local image not found locally, pulling from registry...')
     if (!pullImage(config.localImage)) {
-      log('Cannot pull image. Make sure Docker can reach ghcr.io, or pull manually:', 'error')
-      log(`  docker pull ${config.localImage}`, 'info')
+      log(`Cannot pull image. Make sure ${DOCKER_CMD} can reach ghcr.io, or pull manually:`, 'error')
+      log(`  ${DOCKER_CMD} pull ${config.localImage}`, 'info')
       return false
     }
   }

@@ -252,18 +252,40 @@ async function checkPnpm() {
 }
 
 function checkDocker() {
-  logSection('检查 Docker')
+  logSection('检查 Docker / Podman')
+
+  // Try docker first
   try {
     execSync('docker info', { stdio: 'pipe' })
     log('Docker 守护进程正在运行', 'success')
     return true
   } catch {
-    log('Docker 未安装或未运行', 'error')
-    log('请先安装并启动 Docker，然后重新运行 ./init.sh：', 'info')
-    log('  brew install colima docker && colima start', 'info')
-    log('  # 或从 https://www.docker.com/products/docker-desktop 下载 Docker Desktop', 'info')
-    return false
+    // docker not available, try podman
   }
+
+  // Fallback to podman
+  try {
+    execSync('podman info', { stdio: 'pipe' })
+    log('Podman 正在运行（将作为 Docker 兜底使用）', 'success')
+    // Set DOCKER_HOST so docker-compatible tools can use podman socket
+    const podmanSocket = execSync('podman machine inspect --format "{{.ConnectionInfo.PodmanSocket.Path}}"', { stdio: 'pipe' }).toString().trim()
+    if (podmanSocket) {
+      process.env.DOCKER_HOST = `unix://${podmanSocket}`
+    }
+    return true
+  } catch {
+    // podman not available either
+  }
+
+  log('Docker / Podman 未安装或未运行', 'error')
+  log('请安装以下任一工具后重新运行 ./init.sh：', 'info')
+  log('  # Docker Desktop（推荐）', 'info')
+  log('  https://www.docker.com/products/docker-desktop', 'info')
+  log('  # 或 Colima + Docker CLI', 'info')
+  log('  brew install colima docker && colima start', 'info')
+  log('  # 或 Podman（Apple Silicon 原生，无需 Rosetta）', 'info')
+  log('  brew install podman && podman machine init && podman machine start', 'info')
+  return false
 }
 
 // ===================== TCR Setup =====================
