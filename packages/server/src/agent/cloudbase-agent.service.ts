@@ -1,4 +1,4 @@
-import { mkdirSync, appendFileSync, existsSync } from 'node:fs'
+import { mkdirSync, writeFileSync, readFileSync, appendFileSync, existsSync } from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { query, ExecutionError } from '@tencent-ai/agent-sdk'
@@ -432,7 +432,8 @@ export class CloudbaseAgentService {
       permissionMode: requestedPermissionMode,
       imageBlocks,
     } = options
-    const modelId = model || DEFAULT_MODEL
+    // TODO: 临时 hardcode，所有 CodeBuddy SDK 请求统一使用 mimo-v2.5-pro
+    const modelId = 'mimo-v2.5-pro'
     const isCodingMode = mode === 'coding'
 
     const userContext = { envId: envId || '', userId: userId || 'anonymous' }
@@ -474,6 +475,36 @@ export class CloudbaseAgentService {
       `[Agent] sandboxConfig: mode=${sandboxMode}, sessionId=${sandboxSessionId}, resolvedCwd=${resolvedCwd}, cwd=${cwd}, actualCwd=${actualCwd}`,
     )
     mkdirSync(actualCwd, { recursive: true })
+
+    // ── 复制 .codebuddy/models.json 模板供 SDK 读取自定义模型 ────────────
+    try {
+      const modelsJsonPath = path.join(actualCwd, '.codebuddy', 'models.json')
+      if (!existsSync(modelsJsonPath)) {
+        // ESM: 用 import.meta.url 推算项目内模板路径
+        // dev: src/agent/ → ../../.config/.codebuddy/models.json
+        // prod (bundled): dist/ → ../.config/.codebuddy/models.json
+        const __dirname = path.dirname(fileURLToPath(import.meta.url))
+        const devTpl = path.resolve(__dirname, '../../.config/.codebuddy/models.json')
+        const prodTpl = path.resolve(__dirname, '../.config/.codebuddy/models.json')
+        const templatePath = existsSync(prodTpl) ? prodTpl : devTpl
+        if (existsSync(templatePath)) {
+          mkdirSync(path.join(actualCwd, '.codebuddy'), { recursive: true })
+          const raw = readFileSync(templatePath, 'utf-8')
+          // 解析 ${VAR_NAME} 占位符，注入实际环境变量值
+          const resolved = raw.replace(/\$\{([A-Za-z_][A-Za-z0-9_]*)\}/g, (_, varName) => {
+            return process.env[varName] || ''
+          })
+          writeFileSync(modelsJsonPath, resolved, 'utf-8')
+          console.log('[Agent] models.json written to cwd:', modelsJsonPath, 'from template:', templatePath)
+        } else {
+          console.warn('[Agent] models.json template not found at:', devTpl, 'or', prodTpl)
+        }
+      } else {
+        console.log('[Agent] models.json already exists at:', modelsJsonPath)
+      }
+    } catch (err) {
+      console.error('[Agent] failed to write models.json:', err)
+    }
 
     // Coding 模式：自动放行所有写工具（agent 需要自由操作数据库和部署）
     if (isCodingMode && conversationId) {

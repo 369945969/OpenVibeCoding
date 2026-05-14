@@ -478,6 +478,10 @@ export class ScfSandboxManager {
         Environment: {
           Variables: this.buildGitArchiveVars(),
         },
+        // VpcConfig: {
+        //   VpcId: '',
+        //   SubnetId: '',
+        // },
         Description: 'SCF Sandbox for conversation (Image-based)',
       }
 
