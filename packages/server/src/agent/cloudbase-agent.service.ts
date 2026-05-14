@@ -1,4 +1,4 @@
-import { mkdirSync, writeFileSync, readFileSync, appendFileSync, existsSync } from 'node:fs'
+import { mkdirSync, writeFileSync, readFileSync, appendFileSync, existsSync, unlinkSync } from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { query, ExecutionError } from '@tencent-ai/agent-sdk'
@@ -84,16 +84,74 @@ export interface ModelInfo {
 
 let cachedModels: ModelInfo[] | null = null
 
-// Static model list (temporary, replace with dynamic fetch when ready)
-const STATIC_MODELS: ModelInfo[] = [
-  { id: 'glm-5.1', name: 'GLM-5.1' },
+// 是否使用自定义模型（通过 .codebuddy/models.json 注入到 SDK）
+// true: 模型来自 packages/server/.config/.codebuddy/models.json
+// false: 模型走 SDK 默认（账号绑定的官方模型列表）
+function useCustomModels(): boolean {
+  const v = process.env.CODEBUDDY_USE_CUSTOM_MODELS
+  return v === '1' || v === 'true' || v === 'yes'
+}
+
+// 解析 ${VAR_NAME} 占位符为环境变量值（与模板复制一致）
+function resolveEnvPlaceholders(text: string): string {
+  return text.replace(/\$\{([A-Za-z_][A-Za-z0-9_]*)\}/g, (_, varName) => {
+    return process.env[varName] || ''
+  })
+}
+
+// 解析 .config/.codebuddy/models.json 模板路径（dev / prod 兼容）
+function getModelsTemplatePath(): string | null {
+  const __dirname = path.dirname(fileURLToPath(import.meta.url))
+  const devTpl = path.resolve(__dirname, '../../.config/.codebuddy/models.json')
+  const prodTpl = path.resolve(__dirname, '../.config/.codebuddy/models.json')
+  if (existsSync(prodTpl)) return prodTpl
+  if (existsSync(devTpl)) return devTpl
+  return null
+}
+
+// 从模板读取自定义模型列表（用于前端 listModels 与 SDK modelId 验证）
+function loadCustomModelsFromTemplate(): ModelInfo[] {
+  try {
+    const templatePath = getModelsTemplatePath()
+    if (!templatePath) return []
+    const raw = readFileSync(templatePath, 'utf-8')
+    const config = JSON.parse(raw) as {
+      models?: Array<{
+        id: string
+        name?: string
+        vendor?: string
+        supportsToolCall?: boolean
+        supportsImages?: boolean
+      }>
+      availableModels?: string[]
+    }
+    const allowed = new Set(config.availableModels ?? [])
+    const all = config.models ?? []
+    const filtered = allowed.size > 0 ? all.filter((m) => allowed.has(m.id)) : all
+    return filtered.map((m) => ({
+      id: m.id,
+      name: m.name || m.id,
+      vendor: m.vendor,
+      supportsToolCall: m.supportsToolCall,
+      supportsImages: m.supportsImages,
+    }))
+  } catch (err) {
+    console.warn('[Agent] Failed to load custom models from template:', err)
+    return []
+  }
+}
+
+// SDK 系统模型（账号绑定的官方模型列表，不含自定义）
+const SYSTEM_MODELS: ModelInfo[] = [
   { id: 'glm-5.0', name: 'GLM-5.0' },
-  { id: 'kimi-k2.6', name: 'Kimi-K2.6' },
+  { id: 'glm-4.7', name: 'GLM-4.7' },
+  { id: 'glm-4.6', name: 'GLM-4.6' },
+  { id: 'glm-4.6v', name: 'GLM-4.6V' },
+  { id: 'hunyuan-2.0-thinking', name: 'Hunyuan-2.0-Thinking' },
+  { id: 'deepseek-v3-2-volc', name: 'DeepSeek-V3.2' },
+  { id: 'minimax-m2.5', name: 'MiniMax-M2.5' },
   { id: 'kimi-k2.5', name: 'Kimi-K2.5' },
   { id: 'kimi-k2-thinking', name: 'Kimi-K2-Thinking' },
-  { id: 'minimax-m2.7', name: 'MiniMax-M2.7' },
-  { id: 'minimax-m2.5', name: 'MiniMax-M2.5' },
-  { id: 'deepseek-v3-2-volc', name: 'DeepSeek-V3.2' },
 ]
 
 // Dynamic model fetch from SDK (reserved for future use)
@@ -117,10 +175,18 @@ async function fetchSupportedModels(): Promise<ModelInfo[]> {
 
 export async function getSupportedModels(): Promise<ModelInfo[]> {
   if (cachedModels) return cachedModels
-  // TODO: switch to dynamic fetch when SDK is ready
-  // cachedModels = await fetchSupportedModels()
-  cachedModels = STATIC_MODELS
+  if (useCustomModels()) {
+    const customModels = loadCustomModelsFromTemplate()
+    cachedModels = customModels.length > 0 ? customModels : SYSTEM_MODELS
+  } else {
+    cachedModels = SYSTEM_MODELS
+  }
   return cachedModels
+}
+
+// 测试/调试：清空缓存（环境变量改了之后调用以刷新）
+export function clearModelsCache(): void {
+  cachedModels = null
 }
 
 // ─── Sandbox & Prompt Helpers (imported from base-runtime) ───────────────
@@ -432,8 +498,21 @@ export class CloudbaseAgentService {
       permissionMode: requestedPermissionMode,
       imageBlocks,
     } = options
-    // TODO: 临时 hardcode，所有 CodeBuddy SDK 请求统一使用 mimo-v2.5-pro
-    const modelId = 'mimo-v2.5-pro'
+    // 模型选择策略：
+    // - 自定义模型模式：优先用前端传入；不在自定义白名单内则回落到模板第一个 model
+    // - 系统模型模式：优先用前端传入；否则用 DEFAULT_MODEL
+    let modelId: string
+    if (useCustomModels()) {
+      const customModels = loadCustomModelsFromTemplate()
+      const allowed = new Set(customModels.map((m) => m.id))
+      if (model && allowed.has(model)) {
+        modelId = model
+      } else {
+        modelId = customModels[0]?.id || DEFAULT_MODEL
+      }
+    } else {
+      modelId = model || DEFAULT_MODEL
+    }
     const isCodingMode = mode === 'coding'
 
     const userContext = { envId: envId || '', userId: userId || 'anonymous' }
@@ -477,33 +556,37 @@ export class CloudbaseAgentService {
     mkdirSync(actualCwd, { recursive: true })
 
     // ── 复制 .codebuddy/models.json 模板供 SDK 读取自定义模型 ────────────
-    try {
-      const modelsJsonPath = path.join(actualCwd, '.codebuddy', 'models.json')
-      if (!existsSync(modelsJsonPath)) {
-        // ESM: 用 import.meta.url 推算项目内模板路径
-        // dev: src/agent/ → ../../.config/.codebuddy/models.json
-        // prod (bundled): dist/ → ../.config/.codebuddy/models.json
-        const __dirname = path.dirname(fileURLToPath(import.meta.url))
-        const devTpl = path.resolve(__dirname, '../../.config/.codebuddy/models.json')
-        const prodTpl = path.resolve(__dirname, '../.config/.codebuddy/models.json')
-        const templatePath = existsSync(prodTpl) ? prodTpl : devTpl
-        if (existsSync(templatePath)) {
-          mkdirSync(path.join(actualCwd, '.codebuddy'), { recursive: true })
-          const raw = readFileSync(templatePath, 'utf-8')
-          // 解析 ${VAR_NAME} 占位符，注入实际环境变量值
-          const resolved = raw.replace(/\$\{([A-Za-z_][A-Za-z0-9_]*)\}/g, (_, varName) => {
-            return process.env[varName] || ''
-          })
-          writeFileSync(modelsJsonPath, resolved, 'utf-8')
-          console.log('[Agent] models.json written to cwd:', modelsJsonPath, 'from template:', templatePath)
+    // 仅当 CODEBUDDY_USE_CUSTOM_MODELS=true 时启用
+    if (useCustomModels()) {
+      try {
+        const modelsJsonPath = path.join(actualCwd, '.codebuddy', 'models.json')
+        if (!existsSync(modelsJsonPath)) {
+          const templatePath = getModelsTemplatePath()
+          if (templatePath) {
+            mkdirSync(path.join(actualCwd, '.codebuddy'), { recursive: true })
+            const raw = readFileSync(templatePath, 'utf-8')
+            writeFileSync(modelsJsonPath, resolveEnvPlaceholders(raw), 'utf-8')
+            console.log('[Agent] models.json written to cwd:', modelsJsonPath, 'from template:', templatePath)
+          } else {
+            console.warn('[Agent] CODEBUDDY_USE_CUSTOM_MODELS=true but template not found')
+          }
         } else {
-          console.warn('[Agent] models.json template not found at:', devTpl, 'or', prodTpl)
+          console.log('[Agent] models.json already exists at:', modelsJsonPath)
         }
-      } else {
-        console.log('[Agent] models.json already exists at:', modelsJsonPath)
+      } catch (err) {
+        console.error('[Agent] failed to write models.json:', err)
       }
-    } catch (err) {
-      console.error('[Agent] failed to write models.json:', err)
+    } else {
+      // 系统模型模式：清理掉旧的 models.json，避免 SDK 误读
+      try {
+        const modelsJsonPath = path.join(actualCwd, '.codebuddy', 'models.json')
+        if (existsSync(modelsJsonPath)) {
+          unlinkSync(modelsJsonPath)
+          console.log('[Agent] CODEBUDDY_USE_CUSTOM_MODELS=false, removed stale models.json')
+        }
+      } catch (err) {
+        console.warn('[Agent] failed to remove stale models.json:', err)
+      }
     }
 
     // Coding 模式：自动放行所有写工具（agent 需要自由操作数据库和部署）
