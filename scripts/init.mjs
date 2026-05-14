@@ -263,18 +263,37 @@ function checkDocker() {
     // docker not available, try podman
   }
 
-  // Fallback to podman
-  try {
-    execSync('podman info', { stdio: 'pipe' })
-    log('Podman 正在运行（将作为 Docker 兜底使用）', 'success')
-    // Set DOCKER_HOST so docker-compatible tools can use podman socket
-    const podmanSocket = execSync('podman machine inspect --format "{{.ConnectionInfo.PodmanSocket.Path}}"', { stdio: 'pipe' }).toString().trim()
-    if (podmanSocket) {
-      process.env.DOCKER_HOST = `unix://${podmanSocket}`
+  // Fallback to podman — if machine is stopped/disconnected, attempt to start it
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      execSync('podman info', { stdio: 'pipe' })
+      log('Podman 正在运行（将作为 Docker 兜底使用）', 'success')
+      try {
+        const podmanSocket = execSync('podman machine inspect --format "{{.ConnectionInfo.PodmanSocket.Path}}"', { stdio: 'pipe' }).toString().trim()
+        if (podmanSocket) {
+          process.env.DOCKER_HOST = `unix://${podmanSocket}`
+        }
+      } catch {
+        // native Linux podman, no machine needed
+      }
+      return true
+    } catch {
+      if (attempt === 0) {
+        // podman info failed — machine may be stopped or SSH disconnected
+        log('Podman 已安装但未响应，尝试自动启动...', 'info')
+        try {
+          execSync('podman machine start', { stdio: 'pipe' })
+        } catch {
+          // may already be "running" but SSH broken — stop and restart
+          try {
+            execSync('podman machine stop', { stdio: 'pipe' })
+            execSync('podman machine start', { stdio: 'pipe' })
+          } catch {
+            break
+          }
+        }
+      }
     }
-    return true
-  } catch {
-    // podman not available either
   }
 
   log('Docker / Podman 未安装或未运行', 'error')
@@ -874,6 +893,7 @@ async function setupTcr() {
         TCB_REGION: process.env.TCB_REGION || 'ap-shanghai',
         TENCENTCLOUD_ACCOUNT_ID: process.env.TENCENTCLOUD_ACCOUNT_ID || '',
         TCR_PASSWORD: env['TCR_PASSWORD'] || '',
+        TCR_USERNAME: env['TCR_USERNAME'] || '',
       },
     })
     log('TCR 配置完成', 'success')
