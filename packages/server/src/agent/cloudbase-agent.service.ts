@@ -2,8 +2,6 @@ import { mkdirSync, writeFileSync, readFileSync, appendFileSync, existsSync, unl
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { query, ExecutionError } from '@tencent-ai/agent-sdk'
-import { z } from 'zod'
-import { tool, createSdkMcpServer } from '@anthropic-ai/claude-agent-sdk'
 import { v4 as uuidv4 } from 'uuid'
 import { loadConfig } from '../config/store.js'
 import { persistenceService } from './persistence.service.js'
@@ -493,11 +491,11 @@ export class CloudbaseAgentService {
       cwd,
       askAnswers,
       toolConfirmation,
-      model,
       mode,
       permissionMode: requestedPermissionMode,
       imageBlocks,
     } = options
+    let { model } = options
     // 模型选择策略：
     // - 自定义模型模式：优先用前端传入；不在自定义白名单内则回落到模板第一个 model
     // - 系统模型模式：优先用前端传入；否则用 DEFAULT_MODEL
@@ -849,12 +847,8 @@ export class CloudbaseAgentService {
           // Create sandbox MCP client，使用【登录用户凭证】操作 CloudBase 资源
           sandboxMcpClient = await createSandboxMcpClient({
             sandbox: sandboxInstance,
-            getCredentials: async () => ({
-              cloudbaseEnvId: userContext.envId,
-              secretId: userCredentials?.secretId || '',
-              secretKey: userCredentials?.secretKey || '',
-              sessionToken: userCredentials?.sessionToken,
-            }),
+            userId: userContext.userId,
+            envId: userContext.envId,
             workspaceFolderPaths: actualCwd,
             log: (msg) => console.log(msg),
             onArtifact: (artifact) => {
@@ -865,7 +859,6 @@ export class CloudbaseAgentService {
               if (!app) return null
               return { appId: app.appId, privateKey: decrypt(app.privateKey) }
             },
-            userId: userContext.userId,
             currentModel: modelId,
           })
 
@@ -1090,9 +1083,6 @@ export class CloudbaseAgentService {
     }
 
     // ── MCP Server ────────────────────────────────────────────────────
-    // Note: createSdkMcpServer objects contain Zod schemas with circular references
-    // which cannot be serialized by SDK 0.3.68's ProcessTransport.buildArgs.
-    // Skip custom MCP tools for now - agent has built-in tools (Read/Write/Bash/etc.)
 
     // ── 获取认证凭据（API Key 或 OAuth Token）───────────────────────
     const envVars: Record<string, string> = {}

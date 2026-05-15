@@ -468,7 +468,7 @@ export class OpencodeAcpRuntime extends BaseAgentRuntime {
         url: string
         headers: Array<{ name: string; value: string }>
       }> = []
-      if (sandbox && sandboxResult?.sessionJwe) {
+      if (sandbox && sandboxResult?.sessionJwe && envId) {
         const authHeaders = await sandbox.getAuthHeaders()
         const serverPort = Number(process.env.PORT) || 3001
         mcpServers.push({
@@ -479,6 +479,7 @@ export class OpencodeAcpRuntime extends BaseAgentRuntime {
             { name: 'X-Sandbox-Url', value: sandbox.baseUrl },
             { name: 'X-Sandbox-Auth', value: JSON.stringify(authHeaders) },
             { name: 'X-Session-Id', value: conversationId },
+            { name: 'X-Env-Id', value: envId },
             { name: 'Cookie', value: `nex_session=${sandboxResult.sessionJwe}` },
           ],
         })

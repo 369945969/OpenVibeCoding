@@ -467,12 +467,8 @@ export abstract class BaseAgentRuntime implements IAgentRuntime {
         // Create MCP client
         mcpClient = await createSandboxMcpClient({
           sandbox: sandboxInstance,
-          getCredentials: async () => ({
-            cloudbaseEnvId: envId,
-            secretId: userCredentials?.secretId || '',
-            secretKey: userCredentials?.secretKey || '',
-            sessionToken: userCredentials?.sessionToken,
-          }),
+          userId,
+          envId,
           workspaceFolderPaths: detectedCwd || sandboxConfig.sandboxCwd,
           log: (msg) => console.log(msg),
           onArtifact: (artifact) => {
