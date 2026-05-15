@@ -280,7 +280,8 @@ githubAuth.get('/callback', async (c) => {
         const existingResource = await getDb().userResources.findByUserId(userId)
         if (!existingResource) {
           const resourceId = nanoid()
-          const provisionMode = process.env.TCB_PROVISION_MODE || 'shared'
+          const { getProvisionMode } = await import('../lib/provision-config.js')
+          const provisionMode = await getProvisionMode()
 
           if (provisionMode === 'isolated') {
             await getDb().userResources.create({

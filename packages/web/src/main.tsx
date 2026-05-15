@@ -19,6 +19,7 @@ import { AdminTasksPage } from './pages/admin/tasks-page'
 import { AdminLogsPage } from './pages/admin/logs-page'
 import { AdminEnvDashboardPage } from './pages/admin/env-dashboard-page'
 import { AdminTaskDetailPage } from './pages/admin/task-detail-page'
+import { AdminSettingsPage } from './pages/admin/settings-page'
 import { sessionAtom, sessionLoadedAtom } from './lib/atoms/session'
 import { api } from './lib/api'
 import { Loader2, AlertTriangle, RefreshCw, LogOut } from 'lucide-react'
@@ -289,6 +290,7 @@ function App() {
             <Route path="environments" element={<AdminEnvironmentsPage />} />
             <Route path="tasks" element={<AdminTasksPage />} />
             <Route path="logs" element={<AdminLogsPage />} />
+            <Route path="settings" element={<AdminSettingsPage />} />
             <Route path="dashboard/:userId" element={<AdminEnvDashboardPage />} />
             <Route path="tasks/:taskId" element={<AdminTaskDetailPage />} />
           </Route>

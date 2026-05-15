@@ -35,6 +35,7 @@ export interface Task {
   prompt: string
   title: string | null
   repoUrl: string | null
+  envId: string | null // CloudBase env ID resolved at creation from provision mode
   selectedAgent: string | null
   selectedModel: string | null
   selectedRuntime: string | null
@@ -137,6 +138,8 @@ export interface Key {
 export interface UserResource {
   id: string
   userId: string
+  scope: string // 'user' | 'task'
+  taskId: string | null // set when scope='task'
   status: string
   envId: string | null
   envAlias: string | null
@@ -155,7 +158,7 @@ export interface UserResource {
 
 export interface Setting {
   id: string
-  userId: string
+  userId: string | null // null = system-level setting
   key: string
   value: string
   createdAt: number
@@ -219,6 +222,7 @@ export type NewLocalCredential = Omit<LocalCredential, 'createdAt' | 'updatedAt'
 type TaskNullableFields =
   | 'title'
   | 'repoUrl'
+  | 'envId'
   | 'selectedAgent'
   | 'selectedModel'
   | 'selectedRuntime'
@@ -287,7 +291,9 @@ export type NewKey = Omit<Key, 'createdAt' | 'updatedAt'> & {
   updatedAt?: number
 }
 
-export type NewUserResource = Omit<UserResource, 'createdAt' | 'updatedAt'> & {
+export type NewUserResource = Omit<UserResource, 'createdAt' | 'updatedAt' | 'scope' | 'taskId'> & {
+  scope?: string // defaults to 'user'
+  taskId?: string | null
   createdAt?: number
   updatedAt?: number
 }
@@ -397,6 +403,8 @@ export interface KeyRepository {
 
 export interface UserResourceRepository {
   findByUserId(userId: string): Promise<UserResource | null>
+  findByTaskId(taskId: string): Promise<UserResource | null>
+  findAllByUserId(userId: string): Promise<UserResource[]>
   create(resource: NewUserResource): Promise<UserResource>
   update(id: string, data: Partial<Omit<UserResource, 'id'>>): Promise<UserResource | null>
 }
@@ -405,6 +413,12 @@ export interface SettingRepository {
   findByUserIdAndKey(userId: string, key: string): Promise<Setting | null>
   findByUserId(userId: string): Promise<Setting[]>
   upsert(setting: NewSetting): Promise<Setting>
+  /** Find a system-level setting (userId IS NULL) */
+  findSystemSetting(key: string): Promise<Setting | null>
+  /** Upsert a system-level setting (userId IS NULL) */
+  upsertSystemSetting(key: string, value: string): Promise<Setting>
+  /** List all system-level settings */
+  findAllSystemSettings(): Promise<Setting[]>
 }
 
 export interface DeploymentRepository {

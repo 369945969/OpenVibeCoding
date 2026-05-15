@@ -545,14 +545,35 @@ class DrizzleKeyRepository implements KeyRepository {
 
 class DrizzleUserResourceRepository implements UserResourceRepository {
   async findByUserId(userId: string): Promise<UserResource | null> {
-    const [row] = await drizzleDb.select().from(userResources).where(eq(userResources.userId, userId)).limit(1)
+    // Return user-scoped resource (scope='user'), backwards compatible
+    const [row] = await drizzleDb
+      .select()
+      .from(userResources)
+      .where(and(eq(userResources.userId, userId), eq(userResources.scope, 'user')))
+      .limit(1)
     return (row as UserResource) ?? null
+  }
+
+  async findByTaskId(taskId: string): Promise<UserResource | null> {
+    const [row] = await drizzleDb
+      .select()
+      .from(userResources)
+      .where(and(eq(userResources.scope, 'task'), eq(userResources.taskId, taskId)))
+      .limit(1)
+    return (row as UserResource) ?? null
+  }
+
+  async findAllByUserId(userId: string): Promise<UserResource[]> {
+    const rows = await drizzleDb.select().from(userResources).where(eq(userResources.userId, userId))
+    return rows as UserResource[]
   }
 
   async create(resource: NewUserResource): Promise<UserResource> {
     const ts = now()
     const values = {
       ...resource,
+      scope: resource.scope || 'user',
+      taskId: resource.taskId ?? null,
       createdAt: resource.createdAt ?? ts,
       updatedAt: resource.updatedAt ?? ts,
     }
@@ -589,12 +610,14 @@ class DrizzleSettingRepository implements SettingRepository {
 
   async upsert(setting: NewSetting): Promise<Setting> {
     const ts = now()
-    const existing = await this.findByUserIdAndKey(setting.userId, setting.key)
+    const existing = setting.userId
+      ? await this.findByUserIdAndKey(setting.userId, setting.key)
+      : await this.findSystemSetting(setting.key)
     if (existing) {
-      await drizzleDb
-        .update(settings)
-        .set({ value: setting.value, updatedAt: ts })
-        .where(and(eq(settings.userId, setting.userId), eq(settings.key, setting.key)))
+      const condition = setting.userId
+        ? and(eq(settings.userId, setting.userId), eq(settings.key, setting.key))
+        : and(isNull(settings.userId), eq(settings.key, setting.key))
+      await drizzleDb.update(settings).set({ value: setting.value, updatedAt: ts }).where(condition)
       return { ...existing, value: setting.value, updatedAt: ts }
     }
     const values = {
@@ -605,6 +628,24 @@ class DrizzleSettingRepository implements SettingRepository {
     }
     await drizzleDb.insert(settings).values(values)
     return values as Setting
+  }
+
+  async findSystemSetting(key: string): Promise<Setting | null> {
+    const [row] = await drizzleDb
+      .select()
+      .from(settings)
+      .where(and(isNull(settings.userId), eq(settings.key, key)))
+      .limit(1)
+    return (row as Setting) ?? null
+  }
+
+  async upsertSystemSetting(key: string, value: string): Promise<Setting> {
+    return this.upsert({ id: nanoid(), userId: null, key, value })
+  }
+
+  async findAllSystemSettings(): Promise<Setting[]> {
+    const rows = await drizzleDb.select().from(settings).where(isNull(settings.userId))
+    return rows as Setting[]
   }
 }
 

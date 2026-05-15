@@ -420,7 +420,8 @@ admin.post('/users/create', async (c) => {
   })
 
   // CloudBase 环境配置（与注册逻辑一致）
-  const provisionMode = process.env.TCB_PROVISION_MODE || 'shared'
+  const { getProvisionMode } = await import('../lib/provision-config.js')
+  const provisionMode = await getProvisionMode()
 
   if (process.env.TCB_SECRET_ID && process.env.TCB_SECRET_KEY) {
     const resourceId = nanoid()
@@ -925,6 +926,67 @@ admin.post('/proxy/:envId/functions/:name/invoke', async (c) => {
     const body = await c.req.json()
     const result = await manager.functions.invokeFunction(name, body)
     return c.json({ result: result.RetMsg })
+  } catch (e: any) {
+    return c.json({ error: e.message }, 500)
+  }
+})
+
+// ─── System Settings ──────────────────────────────────────────────────────
+
+admin.get('/system-settings', async (c) => {
+  try {
+    const db = getDb()
+    const allSettings = await db.settings.findAllSystemSettings()
+
+    // Always include provision_mode with default
+    const settingsMap: Record<string, string> = {}
+    for (const s of allSettings) {
+      settingsMap[s.key] = s.value
+    }
+    if (!settingsMap['provision_mode']) {
+      settingsMap['provision_mode'] = process.env.TCB_PROVISION_MODE || 'shared'
+    }
+
+    return c.json({ settings: settingsMap })
+  } catch (e: any) {
+    return c.json({ error: e.message }, 500)
+  }
+})
+
+admin.put('/system-settings/:key', async (c) => {
+  try {
+    const { key } = c.req.param()
+    const body = await c.req.json()
+    const { value } = body
+
+    if (!value || typeof value !== 'string') {
+      return c.json({ error: 'value is required' }, 400)
+    }
+
+    // Validate known settings
+    const { isValidProvisionMode } = await import('../lib/provision-config.js')
+    if (key === 'provision_mode') {
+      if (!isValidProvisionMode(value)) {
+        return c.json({ error: 'Invalid provision mode. Must be: shared, isolated, or task' }, 400)
+      }
+    }
+
+    const db = getDb()
+    const setting = await db.settings.upsertSystemSetting(key, value)
+
+    // Log the action
+    const adminUser = c.get('session')!.user
+    await db.adminLogs.create({
+      id: nanoid(),
+      adminUserId: adminUser.id,
+      action: 'system_setting_update',
+      targetUserId: null,
+      details: JSON.stringify({ key, value }),
+      ipAddress: c.req.header('x-forwarded-for') || c.req.header('x-real-ip') || null,
+      userAgent: c.req.header('user-agent') || null,
+    })
+
+    return c.json({ success: true, setting: { key: setting.key, value: setting.value } })
   } catch (e: any) {
     return c.json({ error: e.message }, 500)
   }

@@ -75,9 +75,10 @@ auth.post('/register', async (c) => {
     const sessionValue = await encryptJWE(session, '1y')
 
     // CloudBase 环境配置
-    // TCB_PROVISION_MODE=isolated → 同步创建独立环境（需 CAM 权限密钥）
-    // TCB_PROVISION_MODE=shared   → 复用主环境 TCB_ENV_ID（默认，即时就绪）
-    const provisionMode = process.env.TCB_PROVISION_MODE || 'shared'
+    // provision_mode: 'shared' | 'isolated' | 'task'
+    // shared → 复用主环境 TCB_ENV_ID, isolated → 创建独立环境, task → 环境在 task 层创建
+    const { getProvisionMode } = await import('../lib/provision-config.js')
+    const provisionMode = await getProvisionMode()
 
     if (process.env.TCB_SECRET_ID && process.env.TCB_SECRET_KEY) {
       const resourceId = nanoid()

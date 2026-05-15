@@ -11,6 +11,7 @@ import { Octokit } from '@octokit/rest'
 import { deleteArchiveBranch, SandboxInstance } from '../sandbox/index.js'
 import { persistenceService } from '../agent/persistence.service'
 import { deleteConversationViaSandbox, scfSandboxManager, archiveToGit } from '../sandbox/index.js'
+import { destroyProvisionedResources } from '../cloudbase/provision.js'
 import type { Octokit as OctokitType } from '@octokit/rest'
 import type { Task } from '../db/types.js'
 
@@ -316,16 +317,21 @@ tasksRouter.post('/', async (c) => {
   const taskId = body.id || nanoid(12)
   const now = Date.now()
 
-  // Compute sandbox config based on WORKSPACE_ISOLATION env var
+  // Resolve envId based on provision mode
+  let taskEnvId: string | null = null
   let sandboxConfig: ReturnType<typeof resolveSandboxConfig> | null = null
   try {
     const resource = await getDb().userResources.findByUserId(session.user.id)
     if (resource?.envId) {
+      taskEnvId = resource.envId
       sandboxConfig = resolveSandboxConfig({ envId: resource.envId, taskId })
     }
   } catch {
     // Non-critical: sandbox config will be computed at agent launch time
   }
+
+  // For task-level isolation mode, env provisioning happens asynchronously after task creation
+  // (handled by the agent runtime when it picks up the task)
 
   await getDb().tasks.create({
     id: taskId,
@@ -333,6 +339,7 @@ tasksRouter.post('/', async (c) => {
     prompt,
     title: null,
     repoUrl: repoUrl || null,
+    envId: taskEnvId,
     selectedAgent,
     selectedModel: selectedModel || null,
     selectedRuntime: selectedRuntime || null,
@@ -412,6 +419,24 @@ tasksRouter.delete('/:taskId', requireUserEnv, async (c) => {
   const existing = await getDb().tasks.findByIdAndUserId(taskId, session.user.id)
   if (!existing || existing.deletedAt) return c.json({ error: 'Task not found' }, 404)
   await getDb().tasks.softDelete(taskId)
+
+  // Clean up task-scoped CloudBase environment if this task had its own env (provision mode = 'task')
+  ;(async () => {
+    try {
+      const taskResource = await getDb().userResources.findByTaskId(taskId)
+      if (taskResource && taskResource.scope === 'task') {
+        console.log('[task-delete] Destroying task-scoped env resources')
+        await destroyProvisionedResources({
+          camUsername: taskResource.camUsername,
+          policyId: taskResource.policyId,
+          envId: taskResource.envId,
+          cosTagValue: taskResource.cosTagValue,
+        })
+      }
+    } catch (e) {
+      console.log('[task-delete] Failed to destroy task env resources')
+    }
+  })()
 
   // conversationId === taskId (ACP convention)
   // Try to clean up via sandbox (rm -rf workspace dir + git archive sync); fall back to direct API delete

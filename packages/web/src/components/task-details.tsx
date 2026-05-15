@@ -72,6 +72,7 @@ import { BrowserControls } from '@/components/chat/browser-controls'
 import { PreviewPlaceholder } from '@/components/chat/preview-placeholder'
 import { useChatStream } from '@/hooks/use-chat-stream'
 import { useAutoFix } from '@/hooks/use-auto-fix'
+import { usePreviewBridge } from '@/hooks/use-preview-bridge'
 import {
   AlertDialog,
   AlertDialogAction,
@@ -325,6 +326,7 @@ export function TaskDetails({
   const [previewLoadingMessage, setPreviewLoadingMessage] = useState('正在启动预览...')
   const [iframeLoaded, setIframeLoaded] = useState(false)
   const [checkingErrors, setCheckingErrors] = useState(false)
+  const [previewCurrentPath, setPreviewCurrentPath] = useState<string | undefined>(undefined)
   const previewIframeRef = useRef<HTMLIFrameElement | null>(null)
   const previewAbortRef = useRef<AbortController | null>(null)
 
@@ -338,38 +340,47 @@ export function TaskDetails({
     autoFixRef.current = { scheduleAutoFix: autoFix.scheduleAutoFix }
   }, [autoFix.scheduleAutoFix])
 
-  // iframe postMessage 监听
-  useEffect(() => {
-    if (!previewGatewayUrl) return
-    let iframeOrigin: string | null = null
-    try {
-      iframeOrigin = new URL(previewGatewayUrl).origin
-    } catch {
-      iframeOrigin = null
-    }
-    const onMessage = (e: MessageEvent) => {
-      if (!e.data || typeof e.data !== 'object') return
-      if ((e.data as { type?: string }).type !== 'preview-error') return
-      // origin 校验：只接受来自 iframe 的消息（防止任意页面伪造）
-      if (iframeOrigin && e.origin !== iframeOrigin) return
+  // ── Preview iframe 双向通信 (PostMessage 协议) ────────────────────────────
+  const [previewBuildError, setPreviewBuildError] = useState<string | null>(null)
+  const [hmrUpdating, setHmrUpdating] = useState(false)
 
-      const payload = e.data as {
-        source?: string
-        message?: string
-        stack?: string
-        componentStack?: string
-      }
-      const message = payload.message || '(no message)'
-      const source = payload.source || 'unknown'
+  const previewBridge = usePreviewBridge({
+    iframeRef: previewIframeRef,
+    previewUrl: previewGatewayUrl,
+    enabled: isCodingMode,
+    onReady: () => {
+      setIframeLoaded(true)
+    },
+    onUrlChanged: (_url, path) => {
+      setPreviewCurrentPath(path)
+    },
+    onBuildError: (message, stack) => {
+      setPreviewBuildError(message)
+      autoFix.scheduleAutoFix({
+        source: 'iframe:build',
+        summary: `[build] ${message}`,
+        detail: stack || undefined,
+      })
+    },
+    onBuildCleared: () => {
+      setPreviewBuildError(null)
+    },
+    onHmrUpdateStart: () => {
+      setHmrUpdating(true)
+    },
+    onHmrUpdateDone: () => {
+      setHmrUpdating(false)
+    },
+    onError: (error) => {
+      const message = error.message || '(no message)'
+      const source = error.source || 'unknown'
       autoFix.scheduleAutoFix({
         source: `iframe:${source}`,
         summary: `[${source}] ${message}`,
-        detail: [payload.stack, payload.componentStack].filter(Boolean).join('\n') || undefined,
+        detail: [error.stack, error.componentStack].filter(Boolean).join('\n') || undefined,
       })
-    }
-    window.addEventListener('message', onMessage)
-    return () => window.removeEventListener('message', onMessage)
-  }, [previewGatewayUrl, autoFix])
+    },
+  })
 
   /**
    * 调后端 SSE 流，实时推送进度。
@@ -497,12 +508,13 @@ export function TaskDetails({
     }
   }, [previewKey]) // eslint-disable-line react-hooks/exhaustive-deps
 
-  // 后台健康检查：iframe 显示后每 30s 通过后端检查 dev server 是否实际响应。
-  // 后端在沙箱内部 curl localhost:5173，避免跨域问题。
-  // status==='stopped' 说明 vite 没在跑，自动重新拉起。
-  // 页面不可见时暂停轮询；切回可见时立即查一次，避免用户盯着已失效的 iframe。
+  // 健康检查：优先用 bridge.ping（快速、无后端开销），HMR 断连时停止轮询。
+  // HMR disconnected 说明 dev server 已不可用，不再浪费 ping。
+  // 页面不可见时暂停轮询；切回可见时立即查一次。
   useEffect(() => {
     if (!isCodingMode || !previewGatewayUrl || previewGatewayLoading) return
+    // HMR 断连 → 不轮询，等用户手动刷新
+    if (previewBridge.hmrStatus === 'disconnected') return
 
     let cancelled = false
     let interval: ReturnType<typeof setInterval> | null = null
@@ -510,6 +522,12 @@ export function TaskDetails({
     const checkHealth = async () => {
       if (cancelled) return
       try {
+        // 优先尝试 bridge ping（iframe 内部双向通信）
+        if (previewBridge.iframeReady) {
+          await previewBridge.ping(8000)
+          return // ping 成功 → dev server 正常
+        }
+        // Fallback: bridge 还没 ready 时走后端健康检查
         const res = await fetch(`/api/tasks/${task.id}/preview-health`, {
           credentials: 'include',
           signal: AbortSignal.timeout(12000),
@@ -523,7 +541,23 @@ export function TaskDetails({
           void loadPreviewGatewayUrl()
         }
       } catch {
-        // 网络错误忽略
+        // ping 超时或网络错误 → dev server 可能已停止，走后端确认
+        if (cancelled) return
+        try {
+          const res = await fetch(`/api/tasks/${task.id}/preview-health`, {
+            credentials: 'include',
+            signal: AbortSignal.timeout(12000),
+          })
+          if (!res.ok) return
+          const data = (await res.json()) as { status: string }
+          if (data.status === 'stopped' && !cancelled) {
+            if (interval) clearInterval(interval)
+            setPreviewLoadingMessage('Dev server 已停止，正在重启...')
+            void loadPreviewGatewayUrl()
+          }
+        } catch {
+          // 网络错误忽略
+        }
       }
     }
 
@@ -557,7 +591,7 @@ export function TaskDetails({
       stopPolling()
       document.removeEventListener('visibilitychange', handleVisibilityChange)
     }
-  }, [isCodingMode, previewGatewayUrl, previewGatewayLoading, loadPreviewGatewayUrl, task.id])
+  }, [isCodingMode, previewGatewayUrl, previewGatewayLoading, previewBridge, loadPreviewGatewayUrl, task.id])
 
   // Pane widths for resizing
   const [filesPaneWidth, setFilesPaneWidth] = useState(() => getFilesPaneWidth())
@@ -2315,11 +2349,13 @@ export function TaskDetails({
                     <div className="flex h-8 shrink-0 items-center gap-1 border-b bg-muted/20 px-2">
                       <BrowserControls
                         previewUrl={previewGatewayUrl || 'http://localhost:5173'}
-                        iframeRef={previewIframeRef}
+                        bridge={previewBridge}
                         onHardRefresh={() => {
                           setPreviewKey((k) => k + 1)
                         }}
                         loading={previewGatewayLoading}
+                        currentPath={previewCurrentPath}
+                        hmrStatus={previewBridge.hmrStatus}
                         className="flex-1 min-w-0"
                       />
                       <Button
@@ -2460,7 +2496,35 @@ export function TaskDetails({
                       {/* iframe：后端已确认 dev server 就绪才返回 URL，拿到即可渲染 */}
                       {previewGatewayUrl && !previewGatewayLoading && (
                         <>
-                          {/* 加载遮罩（等待 iframe onLoad） */}
+                          {/* HMR 更新进度条 */}
+                          {hmrUpdating && (
+                            <div className="absolute top-0 left-0 right-0 z-30 h-0.5 bg-primary/20 overflow-hidden">
+                              <div className="h-full bg-primary animate-pulse w-full" />
+                            </div>
+                          )}
+                          {/* HMR 断连警告 banner */}
+                          {previewBridge.hmrStatus === 'disconnected' && iframeLoaded && (
+                            <div className="absolute top-0 left-0 right-0 z-20 flex items-center justify-between gap-2 bg-amber-50 dark:bg-amber-950/80 border-b border-amber-200 dark:border-amber-800 px-3 py-1.5">
+                              <span className="text-xs text-amber-700 dark:text-amber-300">
+                                热重载已断开，页面无法继续更新
+                              </span>
+                              <button
+                                type="button"
+                                onClick={() => setPreviewKey((k) => k + 1)}
+                                className="text-xs font-medium text-amber-700 dark:text-amber-300 hover:text-amber-900 dark:hover:text-amber-100 underline underline-offset-2 flex-shrink-0"
+                              >
+                                刷新预览
+                              </button>
+                            </div>
+                          )}
+                          {/* Build error banner */}
+                          {previewBuildError && iframeLoaded && (
+                            <div className="absolute top-0 left-0 right-0 z-20 flex items-center gap-2 bg-destructive/10 border-b border-destructive/20 px-3 py-1.5">
+                              <AlertCircle className="h-3.5 w-3.5 text-destructive flex-shrink-0" />
+                              <span className="text-xs text-destructive truncate">{previewBuildError}</span>
+                            </div>
+                          )}
+                          {/* 加载遮罩（等待 iframe onLoad / preview:ready） */}
                           {!iframeLoaded && (
                             <div className="absolute inset-0 z-10">
                               <PreviewPlaceholder />
