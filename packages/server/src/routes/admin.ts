@@ -3,6 +3,7 @@ import { getDb } from '../db/index.js'
 import { requireAdmin, type AppEnv } from '../middleware/admin'
 import { issueTempCredentials } from '../middleware/auth.js'
 import { provisionUserResources, destroyProvisionedResources } from '../cloudbase/provision.js'
+import { getProvisionMode, isValidProvisionMode, resolveProvisionMode } from '../lib/provision-config.js'
 import { persistenceService } from '../agent/persistence.service.js'
 import { nanoid } from 'nanoid'
 import bcrypt from 'bcryptjs'
@@ -420,7 +421,6 @@ admin.post('/users/create', async (c) => {
   })
 
   // CloudBase 环境配置（与注册逻辑一致）
-  const { getProvisionMode } = await import('../lib/provision-config.js')
   const provisionMode = await getProvisionMode()
 
   if (process.env.TCB_SECRET_ID && process.env.TCB_SECRET_KEY) {
@@ -938,16 +938,24 @@ admin.get('/system-settings', async (c) => {
     const db = getDb()
     const allSettings = await db.settings.findAllSystemSettings()
 
-    // Always include provision_mode with default
     const settingsMap: Record<string, string> = {}
     for (const s of allSettings) {
       settingsMap[s.key] = s.value
     }
-    if (!settingsMap['provision_mode']) {
-      settingsMap['provision_mode'] = process.env.TCB_PROVISION_MODE || 'shared'
-    }
 
-    return c.json({ settings: settingsMap })
+    // 对 provision_mode：返回值的来源信息（前端用于展示标签 + 重置按钮）
+    const pm = await resolveProvisionMode()
+    settingsMap['provision_mode'] = pm.value
+
+    return c.json({
+      settings: settingsMap,
+      meta: {
+        provision_mode: {
+          source: pm.source, // 'db' | 'env' | 'default'
+          envDefault: pm.envDefault, // 用户重置后会回落到的值
+        },
+      },
+    })
   } catch (e: any) {
     return c.json({ error: e.message }, 500)
   }
@@ -964,7 +972,6 @@ admin.put('/system-settings/:key', async (c) => {
     }
 
     // Validate known settings
-    const { isValidProvisionMode } = await import('../lib/provision-config.js')
     if (key === 'provision_mode') {
       if (!isValidProvisionMode(value)) {
         return c.json({ error: 'Invalid provision mode. Must be: shared, isolated, or task' }, 400)
@@ -987,6 +994,35 @@ admin.put('/system-settings/:key', async (c) => {
     })
 
     return c.json({ success: true, setting: { key: setting.key, value: setting.value } })
+  } catch (e: any) {
+    return c.json({ error: e.message }, 500)
+  }
+})
+
+/**
+ * DELETE /system-settings/:key — 重置为环境变量默认值。
+ * 删除 DB 中的 system setting，让 getProvisionMode() 回落到 env / 内置默认。
+ */
+admin.delete('/system-settings/:key', async (c) => {
+  try {
+    const { key } = c.req.param()
+    const db = getDb()
+    const existed = await db.settings.deleteSystemSetting(key)
+
+    if (existed) {
+      const adminUser = c.get('session')!.user
+      await db.adminLogs.create({
+        id: nanoid(),
+        adminUserId: adminUser.id,
+        action: 'system_setting_reset',
+        targetUserId: null,
+        details: JSON.stringify({ key }),
+        ipAddress: c.req.header('x-forwarded-for') || c.req.header('x-real-ip') || null,
+        userAgent: c.req.header('user-agent') || null,
+      })
+    }
+
+    return c.json({ success: true, existed })
   } catch (e: any) {
     return c.json({ error: e.message }, 500)
   }

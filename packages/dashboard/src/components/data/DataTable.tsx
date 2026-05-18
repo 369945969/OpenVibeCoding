@@ -1,6 +1,6 @@
 import { useMemo, useState, useCallback, useRef } from 'react'
 import { Search, X, Copy, Pencil, Trash2, ChevronLeft, ChevronRight, Loader2, Plus } from 'lucide-react'
-import { databaseAPI } from '../../services/database'
+import { inferColumns } from '../../services/database'
 import { FieldValue } from './FieldValue'
 import { Button } from '../ui'
 
@@ -50,7 +50,7 @@ export default function DataTable({
   selectedIds = new Set(),
   onSelectionChange,
 }: DataTableProps) {
-  const columns = useMemo(() => databaseAPI.inferColumns(documents), [documents])
+  const columns = useMemo(() => inferColumns(documents), [documents])
   const [showSearch, setShowSearch] = useState(!!search)
   const [searchInput, setSearchInput] = useState(search)
   const [editingCell, setEditingCell] = useState<EditingCell | null>(null)

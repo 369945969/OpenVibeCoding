@@ -36,7 +36,8 @@ const TCR_DOMAIN = 'ccr.ccs.tencentyun.com'
 const ENV_FILE = resolve(process.cwd(), '.env.local')
 const CLOUDBASE_AUTH_FILE = resolve(homedir(), '.config/.cloudbase/auth.json')
 const DEFAULT_NAMESPACE_PREFIX = 'cloudbase-vibecoding'
-const GHCR_IMAGE_URL = 'ghcr.io/yhsunshining/cloudbase-workspace:260513-0354ed6b'
+// docker.io/yhyanghang/cloudbase-workspace:260515-0120e18d
+const GHCR_IMAGE_URL = 'ghcr.io/yhsunshining/cloudbase-workspace:260515-01342a05'
 
 // ===================== Helper Functions =====================
 

@@ -11,7 +11,12 @@ import { Octokit } from '@octokit/rest'
 import { deleteArchiveBranch, SandboxInstance } from '../sandbox/index.js'
 import { persistenceService } from '../agent/persistence.service'
 import { deleteConversationViaSandbox, scfSandboxManager, archiveToGit } from '../sandbox/index.js'
-import { destroyProvisionedResources } from '../cloudbase/provision.js'
+import {
+  destroyProvisionedResources,
+  provisionUserResources,
+  rollbackProvisionedResources,
+} from '../cloudbase/provision.js'
+import { getProvisionMode } from '../lib/provision-config.js'
 import type { Octokit as OctokitType } from '@octokit/rest'
 import type { Task } from '../db/types.js'
 
@@ -317,21 +322,72 @@ tasksRouter.post('/', async (c) => {
   const taskId = body.id || nanoid(12)
   const now = Date.now()
 
-  // Resolve envId based on provision mode
+  // 解析 envId：根据 provision_mode 决定走 user-level 还是 task-level
+  // - shared / isolated: 复用 user resource 的 envId（已在注册时创建）
+  // - task: 同步创建独立 env，env ready 后才返回 task（确保前端拿到 envId）
+  const provisionMode = await getProvisionMode()
   let taskEnvId: string | null = null
   let sandboxConfig: ReturnType<typeof resolveSandboxConfig> | null = null
-  try {
-    const resource = await getDb().userResources.findByUserId(session.user.id)
-    if (resource?.envId) {
-      taskEnvId = resource.envId
-      sandboxConfig = resolveSandboxConfig({ envId: resource.envId, taskId })
-    }
-  } catch {
-    // Non-critical: sandbox config will be computed at agent launch time
-  }
+  let provisionedResourceId: string | null = null
+  let provisionedCamUsername: string | null = null
 
-  // For task-level isolation mode, env provisioning happens asynchronously after task creation
-  // (handled by the agent runtime when it picks up the task)
+  if (provisionMode === 'task') {
+    // 同步创建 task 级独立环境
+    if (!process.env.TCB_SECRET_ID || !process.env.TCB_SECRET_KEY) {
+      return c.json({ error: 'TCB_SECRET_ID/KEY 未配置，无法创建 task 级环境' }, 500)
+    }
+    try {
+      console.log('[tasks.create] provisioning task env synchronously', { taskId })
+      const result = await provisionUserResources(session.user.id, session.user.username)
+      provisionedCamUsername = result.camUsername
+      // 写入 user_resources（scope='task'）
+      provisionedResourceId = nanoid()
+      await getDb().userResources.create({
+        id: provisionedResourceId,
+        userId: session.user.id,
+        scope: 'task',
+        taskId,
+        status: 'success',
+        envId: result.envId,
+        envAlias: result.envAlias,
+        envRegion: result.envRegion,
+        cosTagValue: result.cosTagValue,
+        policyHash: result.policyHash,
+        camUsername: result.camUsername,
+        camSecretId: result.camSecretId,
+        camSecretKey: result.camSecretKey || null,
+        policyId: result.policyId,
+        failStep: null,
+        failReason: null,
+        createdAt: now,
+        updatedAt: now,
+      })
+      taskEnvId = result.envId
+      sandboxConfig = resolveSandboxConfig({ envId: result.envId, taskId })
+      console.log('[tasks.create] task env ready', { taskId, envId: result.envId })
+    } catch (err) {
+      console.error('[tasks.create] task env provision failed:', (err as Error).message)
+      // 回滚已创建的腾讯云资源（best-effort）
+      try {
+        await rollbackProvisionedResources({
+          camUsername: provisionedCamUsername || `vibe_${session.user.id.substring(0, 20)}`,
+        })
+      } catch {
+        // best-effort
+      }
+      return c.json({ error: '创建 task 级 CloudBase 环境失败：' + (err as Error).message }, 500)
+    }
+  } else {
+    try {
+      const resource = await getDb().userResources.findByUserId(session.user.id)
+      if (resource?.envId) {
+        taskEnvId = resource.envId
+        sandboxConfig = resolveSandboxConfig({ envId: resource.envId, taskId })
+      }
+    } catch {
+      // Non-critical: sandbox config will be computed at agent launch time
+    }
+  }
 
   await getDb().tasks.create({
     id: taskId,

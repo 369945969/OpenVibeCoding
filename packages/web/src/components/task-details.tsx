@@ -203,7 +203,9 @@ export function TaskDetails({
   const { resolvedTheme } = useTheme()
   const dashboardTheme: Theme = resolvedTheme === 'light' ? 'light' : 'dark'
   const session = useAtomValue(sessionAtom)
-  const sessionEnvId = session?.envId || ''
+  // 优先用 task 自己的 envId（task provision 模式下每个 task 有独立 env）
+  // 否则 fallback 到 user-level（shared / isolated 模式）
+  const sessionEnvId = task.envId || session?.envId || ''
 
   // ── Chat stream — hoisted here so it survives TaskChat remounts ──
   // onStreamComplete 经包装：原回调先跑，然后异步探测 /__dev_errors，
@@ -2737,9 +2739,14 @@ export function TaskDetails({
             )}
 
             {/* Cloud Dashboard */}
-            {showCloudPane && (
+            {showCloudPane && sessionEnvId && (
               <div className="flex-1 min-h-0 min-w-0">
-                <CloudDashboard envId={sessionEnvId} theme={dashboardTheme} style={{ height: '100%' }} />
+                <CloudDashboard
+                  envId={sessionEnvId}
+                  taskId={task.id}
+                  theme={dashboardTheme}
+                  style={{ height: '100%' }}
+                />
               </div>
             )}
 
@@ -3031,7 +3038,14 @@ export function TaskDetails({
 
               {/* Cloud Tab */}
               <div className={cn('h-full', activeTab !== 'cloud' && 'hidden')}>
-                <CloudDashboard envId={sessionEnvId} theme={dashboardTheme} style={{ height: '100%' }} />
+                {sessionEnvId && (
+                  <CloudDashboard
+                    envId={sessionEnvId}
+                    taskId={task.id}
+                    theme={dashboardTheme}
+                    style={{ height: '100%' }}
+                  />
+                )}
               </div>
             </div>
 

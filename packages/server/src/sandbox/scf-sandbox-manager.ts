@@ -476,7 +476,10 @@ export class ScfSandboxManager {
           },
         },
         Environment: {
-          Variables: this.buildGitArchiveVars(),
+          Variables: [
+            ...this.buildGitArchiveVars(),
+            { Key: 'VITE_DEV_OVERLAY', Value: process.env.VITE_DEV_OVERLAY || '' },
+          ],
         },
         // VpcConfig: {
         //   VpcId: '',

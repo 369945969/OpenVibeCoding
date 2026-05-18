@@ -223,6 +223,7 @@ export function AppLayout({ children, initialSidebarWidth, initialSidebarOpen, i
       prompt: taskData.prompt,
       title: null,
       repoUrl: taskData.repoUrl,
+      envId: null,
       selectedAgent: taskData.selectedAgent,
       selectedModel: taskData.selectedModel,
       installDependencies: taskData.installDependencies,

@@ -1,11 +1,12 @@
 import { useState, useEffect } from 'react'
 import { HardDrive, Globe } from 'lucide-react'
 import { useAtom } from 'jotai'
-import { storageAPI, BucketInfo } from '../../services/storage'
+import { useStorageAPI, BucketInfo } from '../../services/storage'
 import { activeBucketAtom, storagePrefixAtom } from '../../atoms/storage'
 import { cn } from '../../utils/helpers'
 
 export const StorageMenu = () => {
+  const storageAPI = useStorageAPI()
   const [buckets, setBuckets] = useState<BucketInfo[]>([])
   const [loading, setLoading] = useState(true)
   const [activeBucket, setActiveBucket] = useAtom(activeBucketAtom)
@@ -20,7 +21,8 @@ export const StorageMenu = () => {
       })
       .catch(() => {})
       .finally(() => setLoading(false))
-  }, [])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [storageAPI])
 
   const handleSelect = (b: BucketInfo) => {
     setActiveBucket(b)

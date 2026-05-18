@@ -6,7 +6,7 @@ import { Badge } from '../../components/ui/badge'
 import { RadioGroup, RadioGroupItem } from '../../components/ui/radio-group'
 import { Label } from '../../components/ui/label'
 import { toast } from 'sonner'
-import { Save, AlertTriangle } from 'lucide-react'
+import { Save, AlertTriangle, RotateCcw } from 'lucide-react'
 
 const PROVISION_MODES = [
   {
@@ -29,10 +29,27 @@ const PROVISION_MODES = [
   },
 ] as const
 
+type ProvisionSource = 'db' | 'env' | 'default'
+interface ProvisionMeta {
+  source: ProvisionSource
+  envDefault: string
+}
+
+const SOURCE_LABEL: Record<ProvisionSource, { text: string; tone: string }> = {
+  db: { text: 'DB（管理员设置）', tone: 'bg-primary/10 text-primary border-primary/20' },
+  env: {
+    text: 'Env（部署配置）',
+    tone: 'bg-blue-100 dark:bg-blue-950/40 text-blue-700 dark:text-blue-300 border-blue-200 dark:border-blue-800',
+  },
+  default: { text: '默认值', tone: 'bg-muted text-muted-foreground border-border' },
+}
+
 export function AdminSettingsPage() {
   const [settings, setSettings] = useState<Record<string, string>>({})
+  const [meta, setMeta] = useState<ProvisionMeta | null>(null)
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
+  const [resetting, setResetting] = useState(false)
   const [provisionMode, setProvisionMode] = useState('shared')
 
   useEffect(() => {
@@ -42,8 +59,12 @@ export function AdminSettingsPage() {
   async function loadSettings() {
     try {
       setLoading(true)
-      const data = (await api.get('/api/admin/system-settings')) as { settings: Record<string, string> }
+      const data = (await api.get('/api/admin/system-settings')) as {
+        settings: Record<string, string>
+        meta?: { provision_mode?: ProvisionMeta }
+      }
       setSettings(data.settings)
+      setMeta(data.meta?.provision_mode ?? null)
       setProvisionMode(data.settings['provision_mode'] || 'shared')
     } catch (e: any) {
       toast.error('加载设置失败', { description: e.message })
@@ -56,8 +77,8 @@ export function AdminSettingsPage() {
     try {
       setSaving(true)
       await api.put('/api/admin/system-settings/provision_mode', { value: provisionMode })
-      setSettings((prev) => ({ ...prev, provision_mode: provisionMode }))
       toast.success('设置已保存')
+      await loadSettings() // 重新加载以更新 meta.source
     } catch (e: any) {
       toast.error('保存失败', { description: e.message })
     } finally {
@@ -65,7 +86,22 @@ export function AdminSettingsPage() {
     }
   }
 
+  async function handleReset() {
+    try {
+      setResetting(true)
+      await api.delete('/api/admin/system-settings/provision_mode')
+      toast.success('已重置为部署默认值')
+      await loadSettings()
+    } catch (e: any) {
+      toast.error('重置失败', { description: e.message })
+    } finally {
+      setResetting(false)
+    }
+  }
+
   const isDirty = provisionMode !== (settings['provision_mode'] || 'shared')
+  const fromDb = meta?.source === 'db'
+  const sourceInfo = meta ? SOURCE_LABEL[meta.source] : null
 
   if (loading) {
     return (
@@ -85,9 +121,21 @@ export function AdminSettingsPage() {
       {/* Provision Mode */}
       <Card className="p-6">
         <div className="space-y-4">
-          <div>
-            <h2 className="text-lg font-medium">环境隔离粒度</h2>
-            <p className="text-sm text-muted-foreground mt-1">控制用户开通时 CloudBase 云开发环境的分配策略</p>
+          <div className="space-y-2">
+            <div className="flex items-center gap-2">
+              <h2 className="text-lg font-medium">环境隔离粒度</h2>
+              {sourceInfo && (
+                <Badge variant="outline" className={`text-xs ${sourceInfo.tone}`}>
+                  来源：{sourceInfo.text}
+                </Badge>
+              )}
+            </div>
+            <p className="text-sm text-muted-foreground">控制用户开通时 CloudBase 云开发环境的分配策略</p>
+            <p className="text-xs text-muted-foreground">
+              优先级：管理员设置（DB） &gt; 部署环境变量{' '}
+              <code className="px-1 rounded bg-muted">TCB_PROVISION_MODE</code> &gt; 默认{' '}
+              <code className="px-1 rounded bg-muted">shared</code>
+            </p>
           </div>
 
           <RadioGroup value={provisionMode} onValueChange={setProvisionMode} className="space-y-3">
@@ -125,8 +173,20 @@ export function AdminSettingsPage() {
             </div>
           )}
 
-          <div className="flex justify-end">
-            <Button onClick={handleSave} disabled={!isDirty || saving} size="sm">
+          <div className="flex justify-end gap-2">
+            {fromDb && meta && (
+              <Button
+                variant="outline"
+                onClick={handleReset}
+                disabled={resetting || saving}
+                size="sm"
+                title={`回落到环境变量值：${meta.envDefault}`}
+              >
+                <RotateCcw className="h-4 w-4 mr-1" />
+                {resetting ? '重置中...' : `重置为部署默认（${meta.envDefault}）`}
+              </Button>
+            )}
+            <Button onClick={handleSave} disabled={!isDirty || saving || resetting} size="sm">
               <Save className="h-4 w-4 mr-1" />
               {saving ? '保存中...' : '保存设置'}
             </Button>

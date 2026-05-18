@@ -417,6 +417,8 @@ export interface SettingRepository {
   findSystemSetting(key: string): Promise<Setting | null>
   /** Upsert a system-level setting (userId IS NULL) */
   upsertSystemSetting(key: string, value: string): Promise<Setting>
+  /** Delete a system-level setting (returns true if existed) */
+  deleteSystemSetting(key: string): Promise<boolean>
   /** List all system-level settings */
   findAllSystemSettings(): Promise<Setting[]>
 }

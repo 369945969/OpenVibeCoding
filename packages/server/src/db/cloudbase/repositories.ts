@@ -833,6 +833,13 @@ class CloudBaseSettingRepository implements SettingRepository {
     return this.upsert({ id: nanoid(), userId: null, key, value })
   }
 
+  async deleteSystemSetting(key: string): Promise<boolean> {
+    const _ = getCommand()
+    const collection = await getCollection('settings')
+    const result = await collection.where({ userId: _.eq(null), key: _.eq(key) }).remove()
+    return ((result as any).deleted ?? 0) > 0
+  }
+
   async findAllSystemSettings(): Promise<Setting[]> {
     const _ = getCommand()
     const collection = await getCollection('settings')

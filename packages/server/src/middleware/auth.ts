@@ -39,6 +39,17 @@ export type AppEnv = {
     apiKeyScopes: string[] | undefined
     /** Admin user info, set by requireAdmin middleware */
     adminUser: any
+    /**
+     * 上游 middleware 提示当前请求归属的 task。requireUserEnv 会优先按它解析 task 级 envId。
+     * ACP 路由从 JSON-RPC body 的 params.conversationId/sessionId 提取后写入此变量。
+     */
+    taskIdHint: string | undefined
+    /**
+     * 上游 middleware 提示当前请求要操作的 envId（与凭证强绑定）。
+     * 用于客户端显式指定操作哪个 env（如 /api/capi 的 params.EnvId）的场景：
+     * requireUserEnv 会按此 envId 反查 user_resources 解析对应凭证（避免凭证/envId 错配）。
+     */
+    envIdHint: string | undefined
   }
 }
 
@@ -137,7 +148,7 @@ export async function issueTempCredentials(
   try {
     const app = new CloudBaseManager({ secretId: systemSecretId, secretKey: systemSecretKey, envId: systemEnvId })
 
-    const result = await app.commonService('sts').call({
+    const result = await app.commonService('sts', '2018-08-13').call({
       Action: 'GetFederationToken',
       Param: {
         Name: `vibe-user-${userId.slice(0, 8)}`,
@@ -173,6 +184,12 @@ export async function issueTempCredentials(
 /**
  * 中间件：校验登录 + 环境就绪 + 解析凭证
  * 下游通过 c.get('userEnv') 获取 { envId, userId, credentials }
+ *
+ * envId 解析优先级（task 模式必备）：
+ *   1. URL param `:taskId` → 按 taskId 查 task 级 user_resources
+ *   2. Header `X-Task-Id` 或 query `taskId` → 同上（dashboard / 通用 API 用）
+ *   3. user-level user_resources（shared / isolated / task 模式 fallback）
+ *
  * credentials 已解析好（永久密钥 or 临时密钥），可直接使用
  */
 export async function requireUserEnv(c: Context<AppEnv>, next: Next) {
@@ -182,7 +199,72 @@ export async function requireUserEnv(c: Context<AppEnv>, next: Next) {
   const session = c.get('session')!
   const userId = session.user.id
 
-  const resource = await getDb().userResources.findByUserId(userId)
+  // 1. 先尝试按 taskId 查 task 级资源
+  // taskId 来源（按优先级）：URL :taskId param > X-Task-Id header > query taskId > c.var.taskIdHint
+  const taskId =
+    c.req.param('taskId') ??
+    c.req.header('X-Task-Id') ??
+    new URL(c.req.url).searchParams.get('taskId') ??
+    c.get('taskIdHint') ??
+    null
+  let resource: Awaited<ReturnType<typeof getDb>['userResources']['findByUserId']> | null = null
+  let resolvedFrom: 'task' | 'env' | 'user' = 'user'
+  if (taskId) {
+    try {
+      const taskResource = await getDb().userResources.findByTaskId(taskId)
+      console.log('[requireUserEnv] findByTaskId', {
+        taskId,
+        found: !!taskResource,
+        ownedByUser: taskResource ? taskResource.userId === userId : false,
+        status: taskResource?.status,
+        envId: taskResource?.envId,
+        scope: taskResource?.scope,
+      })
+      if (taskResource && taskResource.userId === userId && taskResource.status === 'success' && taskResource.envId) {
+        resource = taskResource
+        resolvedFrom = 'task'
+      }
+    } catch (err) {
+      console.warn('[requireUserEnv] findByTaskId threw', (err as Error).message)
+      // 找不到/不属于当前用户：fallback 到 envId 解析
+    }
+  }
+
+  // 2. 没匹配到 task 级时，尝试按 envIdHint 反查 user_resources（dashboard / capi 显式指定 envId 的场景）
+  if (!resource) {
+    // envId 来源：URL :envId param > X-Env-Id header > query envId > c.var.envIdHint
+    const envIdHint =
+      c.req.param('envId') ??
+      c.req.header('X-Env-Id') ??
+      new URL(c.req.url).searchParams.get('envId') ??
+      c.get('envIdHint') ??
+      null
+    if (envIdHint) {
+      try {
+        const all = await getDb().userResources.findAllByUserId(userId)
+        const match = all.find((r) => r.envId === envIdHint && r.status === 'success')
+        console.log('[requireUserEnv] findByEnvId', {
+          envIdHint,
+          totalUserResources: all.length,
+          found: !!match,
+          scope: match?.scope,
+          taskId: match?.taskId,
+        })
+        if (match) {
+          resource = match
+          resolvedFrom = 'env'
+        }
+      } catch (err) {
+        console.warn('[requireUserEnv] findAllByUserId threw', (err as Error).message)
+      }
+    }
+  }
+
+  // 3. fallback：user-level resource
+  if (!resource) {
+    resource = await getDb().userResources.findByUserId(userId)
+    console.log('[requireUserEnv] fallback to user-level', { userId, envId: resource?.envId })
+  }
 
   if (!resource?.envId) {
     return c.json({ error: 'User environment not ready' }, 400)
@@ -192,16 +274,28 @@ export async function requireUserEnv(c: Context<AppEnv>, next: Next) {
 
   // 解析凭证：优先永久密钥，否则签发临时密钥
   let credentials: UserEnv['credentials'] | undefined
+  let credentialSource: 'permanent' | 'temp'
 
   if (resource.camSecretId && resource.camSecretKey) {
     credentials = { secretId: resource.camSecretId, secretKey: resource.camSecretKey }
+    credentialSource = 'permanent'
   } else {
     credentials = await issueTempCredentials(envId, userId)
+    credentialSource = 'temp'
   }
 
   if (!credentials) {
     return c.json({ error: 'Failed to obtain user credentials' }, 500)
   }
+
+  console.log('[requireUserEnv] resolved', {
+    path: c.req.path,
+    resolvedFrom,
+    envId,
+    credentialSource,
+    secretIdPrefix: credentials.secretId.slice(0, 8),
+    hasSessionToken: !!credentials.sessionToken,
+  })
 
   c.set('userEnv', { envId, userId, credentials })
 

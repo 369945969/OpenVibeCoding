@@ -1,6 +1,6 @@
 import { useEffect, useState, useCallback } from 'react'
 import { useDatabaseState } from '../hooks/useDatabaseState'
-import { databaseAPI } from '../services/database'
+import { useDatabaseAPI } from '../services/database'
 import DataTable from '../components/data/DataTable'
 import DocList from '../components/data/DocList'
 import DocumentEditor from '../components/data/DocumentEditor'
@@ -12,6 +12,7 @@ import { cn } from '../utils/helpers'
 type ViewMode = 'table' | 'doc'
 
 export default function DatabasePage() {
+  const databaseAPI = useDatabaseAPI()
   const {
     activeCollection,
     documents,
@@ -52,7 +53,7 @@ export default function DatabasePage() {
         setLoading(false)
       }
     },
-    [pageSize, setDocuments, setTotal, setLoading, setError],
+    [pageSize, setDocuments, setTotal, setLoading, setError, databaseAPI],
   )
 
   useEffect(() => {

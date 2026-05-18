@@ -1,3 +1,5 @@
+import { tdFetch } from '../services/http'
+import { useApiContext } from '../services/api-context'
 import { useState } from 'react'
 import { Play, Trash2, ChevronDown } from 'lucide-react'
 import { Button, Badge } from '../components/ui'
@@ -11,6 +13,7 @@ interface QueryResult {
 }
 
 export default function SqlPage() {
+  const apiCtx = useApiContext()
   const [sql, setSql] = useState('SELECT * FROM information_schema.tables LIMIT 10;')
   const [result, setResult] = useState<QueryResult | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -23,7 +26,7 @@ export default function SqlPage() {
     const t = Date.now()
     try {
       const apiBase = import.meta.env.VITE_API_BASE || '/api'
-      const r = await fetch(`${apiBase}/sql/query`, {
+      const r = await tdFetch(apiCtx, `${apiBase}/sql/query`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ sql }),

@@ -14,6 +14,9 @@ export default defineConfig({
       // 让 web 直接引用 dashboard 源码，vite 一起打包处理
       '@coder/dashboard': path.resolve(__dirname, '../dashboard/src'),
     },
+    // 防止 jotai 被重复实例化：web 和 dashboard 必须共享同一份 module，
+    // 否则 getDefaultStore() 在 dashboard 模块里和 web 模块里返回的是不同的 store。
+    dedupe: ['jotai', 'react', 'react-dom'],
   },
   define: {
     'process.env': {},

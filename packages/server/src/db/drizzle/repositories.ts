@@ -643,6 +643,13 @@ class DrizzleSettingRepository implements SettingRepository {
     return this.upsert({ id: nanoid(), userId: null, key, value })
   }
 
+  async deleteSystemSetting(key: string): Promise<boolean> {
+    const result = await drizzleDb.delete(settings).where(and(isNull(settings.userId), eq(settings.key, key)))
+    // drizzle 不同 driver 返回结构不一，统一通过 changes/affectedRows 判断
+    const affected = (result as any).changes ?? (result as any).rowCount ?? (result as any).affectedRows ?? 0
+    return affected > 0
+  }
+
   async findAllSystemSettings(): Promise<Setting[]> {
     const rows = await drizzleDb.select().from(settings).where(isNull(settings.userId))
     return rows as Setting[]

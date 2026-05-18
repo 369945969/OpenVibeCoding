@@ -220,8 +220,23 @@ export function createInjectCredentials(opts: CreateInjectCredentialsOptions): I
   const { userId, envId, conversationId, sandboxFetch, workspaceFolderPaths, on401 } = opts
 
   return async () => {
-    // 优先永久密钥（resource.camSecretId/Key），否则签发临时密钥
-    const resource = await getDb().userResources.findByUserId(userId)
+    // 凭证查找策略（按优先级）：
+    //   1. 当前会话有 task 级 user_resources（scope='task' && taskId=conversationId）→ 用它
+    //   2. fallback：user-level resource（shared / isolated）
+    //   3. 都没有 → issueTempCredentials 签发临时密钥（按当前 envId）
+    let resource = await getDb()
+      .userResources.findByTaskId(conversationId)
+      .catch(() => null)
+    if (resource && (resource.userId !== userId || resource.envId !== envId)) {
+      // 不属于当前用户或 envId 不匹配，丢弃
+      resource = null
+    }
+    if (!resource) {
+      resource = await getDb().userResources.findByUserId(userId)
+      // 二次保护：fallback 的 user-level resource 也得 envId 匹配，否则会注入错凭证
+      if (resource && resource.envId !== envId) resource = null
+    }
+
     let creds: { secretId: string; secretKey: string; sessionToken?: string } | undefined
     if (resource?.camSecretId && resource?.camSecretKey) {
       creds = { secretId: resource.camSecretId, secretKey: resource.camSecretKey }
@@ -229,6 +244,14 @@ export function createInjectCredentials(opts: CreateInjectCredentialsOptions): I
       creds = await issueTempCredentials(envId, userId)
     }
     if (!creds) throw new Error('Failed to obtain user credentials for injection')
+
+    console.log('[createInjectCredentials] inject', {
+      conversationId,
+      envId,
+      userId,
+      source: resource ? (resource.scope === 'task' ? 'task-resource' : 'user-resource') : 'temp-credentials',
+      secretIdPrefix: creds.secretId.slice(0, 8),
+    })
 
     const res = await sandboxFetch('/api/session/env', {
       method: 'PUT',

@@ -2,12 +2,13 @@ import { useState, useEffect } from 'react'
 import { Search, Plus, ChevronDown, MoreHorizontal, Trash2, Copy, Shield, X, Check } from 'lucide-react'
 import { cn } from '../../utils/helpers'
 import { useDatabaseState } from '../../hooks/useDatabaseState'
-import { databaseAPI } from '../../services/database'
+import { useDatabaseAPI } from '../../services/database'
 import { ContextMenu, ContextMenuItem, ContextMenuSeparator } from '../ui/ContextMenu'
 import { toast } from 'sonner'
 import CollectionPermissions from '../data/CollectionPermissions'
 
 export const DatabaseMenu = () => {
+  const databaseAPI = useDatabaseAPI()
   const { activeCollection, setActiveCollection } = useDatabaseState()
   const [collections, setCollections] = useState<string[]>([])
   const [searchQuery, setSearchQuery] = useState('')
@@ -26,7 +27,7 @@ export const DatabaseMenu = () => {
       .getCollections()
       .then((data) => setCollections(data.map((c) => c.CollectionName)))
       .catch(() => toast.error('加载集合失败'))
-  }, [])
+  }, [databaseAPI])
 
   const grouped = {
     user: collections.filter((c) => !c.startsWith('app_') && !c.startsWith('_system_') && !c.startsWith('system_')),
@@ -52,6 +53,7 @@ export const DatabaseMenu = () => {
   }
 
   const handleCreate = async () => {
+    if (saving) return
     const name = newName.trim()
     if (!name) return
     if (collections.includes(name)) {
