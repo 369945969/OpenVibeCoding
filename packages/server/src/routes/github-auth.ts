@@ -276,14 +276,15 @@ githubAuth.get('/callback', async (c) => {
       }
 
       // Provision CloudBase resources for new users
+      // 仅 isolated 模式需要预建 user-level env；shared / task 不写 user_resources
       if (process.env.TCB_SECRET_ID && process.env.TCB_SECRET_KEY) {
         const existingResource = await getDb().userResources.findByUserId(userId)
         if (!existingResource) {
-          const resourceId = nanoid()
           const { getProvisionMode } = await import('../lib/provision-config.js')
           const provisionMode = await getProvisionMode()
 
           if (provisionMode === 'isolated') {
+            const resourceId = nanoid()
             await getDb().userResources.create({
               id: resourceId,
               userId,
@@ -326,26 +327,8 @@ githubAuth.get('/callback', async (c) => {
                   updatedAt: Date.now(),
                 })
               })
-          } else {
-            await getDb().userResources.create({
-              id: resourceId,
-              userId,
-              status: 'success',
-              envId: process.env.TCB_ENV_ID || null,
-              envAlias: null,
-              envRegion: null,
-              cosTagValue: null,
-              policyHash: null,
-              camUsername: null,
-              camSecretId: process.env.TCB_SECRET_ID || null,
-              camSecretKey: process.env.TCB_SECRET_KEY || null,
-              policyId: null,
-              failStep: null,
-              failReason: null,
-              createdAt: now,
-              updatedAt: now,
-            })
           }
+          // shared / task：不写 user_resources，运行时按 mode 解析
         }
       }
 

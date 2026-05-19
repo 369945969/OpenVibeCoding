@@ -322,9 +322,10 @@ tasksRouter.post('/', async (c) => {
   const taskId = body.id || nanoid(12)
   const now = Date.now()
 
-  // 解析 envId：根据 provision_mode 决定走 user-level 还是 task-level
-  // - shared / isolated: 复用 user resource 的 envId（已在注册时创建）
-  // - task: 同步创建独立 env，env ready 后才返回 task（确保前端拿到 envId）
+  // 解析 envId：根据 provision_mode 决定 task.envId 怎么来
+  //   - shared:   直接用 TCB_ENV_ID（不写 user_resources）
+  //   - isolated: 复用 user_resources(scope='user') 的 envId（已在注册时预建；缺失时懒建兜底）
+  //   - task:     同步建独立 env，env ready 后才返回 task
   const provisionMode = await getProvisionMode()
   let taskEnvId: string | null = null
   let sandboxConfig: ReturnType<typeof resolveSandboxConfig> | null = null
@@ -338,7 +339,7 @@ tasksRouter.post('/', async (c) => {
     }
     try {
       console.log('[tasks.create] provisioning task env synchronously', { taskId })
-      const result = await provisionUserResources(session.user.id, session.user.username)
+      const result = await provisionUserResources(session.user.id, session.user.username, { taskId })
       provisionedCamUsername = result.camUsername
       // 写入 user_resources（scope='task'）
       provisionedResourceId = nanoid()
@@ -370,22 +371,76 @@ tasksRouter.post('/', async (c) => {
       // 回滚已创建的腾讯云资源（best-effort）
       try {
         await rollbackProvisionedResources({
-          camUsername: provisionedCamUsername || `vibe_${session.user.id.substring(0, 20)}`,
+          camUsername: provisionedCamUsername || `vibe_t_${taskId.substring(0, 18)}`,
         })
       } catch {
         // best-effort
       }
       return c.json({ error: '创建 task 级 CloudBase 环境失败：' + (err as Error).message }, 500)
     }
+  } else if (provisionMode === 'shared') {
+    // shared 模式：直接用支撑账号 env，无需 user_resources
+    if (process.env.TCB_ENV_ID) {
+      taskEnvId = process.env.TCB_ENV_ID
+      sandboxConfig = resolveSandboxConfig({ envId: process.env.TCB_ENV_ID, taskId })
+    }
   } else {
+    // isolated：复用 user-level env；缺失时懒建兜底（覆盖 mode 切换场景）
     try {
-      const resource = await getDb().userResources.findByUserId(session.user.id)
+      let resource = await getDb().userResources.findByUserId(session.user.id)
+      if (!resource?.envId || resource.status !== 'success') {
+        if (!process.env.TCB_SECRET_ID || !process.env.TCB_SECRET_KEY) {
+          return c.json({ error: 'TCB_SECRET_ID/KEY 未配置，无法创建 user-level 环境' }, 500)
+        }
+        console.log('[tasks.create] lazily provisioning user-level env for isolated mode')
+        const result = await provisionUserResources(session.user.id, session.user.username)
+        if (resource?.id) {
+          await getDb().userResources.update(resource.id, {
+            status: 'success',
+            envId: result.envId,
+            envAlias: result.envAlias,
+            envRegion: result.envRegion,
+            cosTagValue: result.cosTagValue,
+            policyHash: result.policyHash,
+            camUsername: result.camUsername,
+            camSecretId: result.camSecretId,
+            camSecretKey: result.camSecretKey || null,
+            policyId: result.policyId,
+            failStep: null,
+            failReason: null,
+            updatedAt: Date.now(),
+          })
+        } else {
+          await getDb().userResources.create({
+            id: nanoid(),
+            userId: session.user.id,
+            scope: 'user',
+            taskId: null,
+            status: 'success',
+            envId: result.envId,
+            envAlias: result.envAlias,
+            envRegion: result.envRegion,
+            cosTagValue: result.cosTagValue,
+            policyHash: result.policyHash,
+            camUsername: result.camUsername,
+            camSecretId: result.camSecretId,
+            camSecretKey: result.camSecretKey || null,
+            policyId: result.policyId,
+            failStep: null,
+            failReason: null,
+            createdAt: now,
+            updatedAt: now,
+          })
+        }
+        resource = await getDb().userResources.findByUserId(session.user.id)
+      }
       if (resource?.envId) {
         taskEnvId = resource.envId
         sandboxConfig = resolveSandboxConfig({ envId: resource.envId, taskId })
       }
-    } catch {
-      // Non-critical: sandbox config will be computed at agent launch time
+    } catch (err) {
+      console.error('[tasks.create] isolated user-level lazy provision failed:', (err as Error).message)
+      return c.json({ error: '创建用户级 CloudBase 环境失败：' + (err as Error).message }, 500)
     }
   }
 

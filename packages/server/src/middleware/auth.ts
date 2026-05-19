@@ -3,7 +3,8 @@ import { getCookie } from 'hono/cookie'
 import { decryptJWE } from '../lib/session'
 import { getDb } from '../db/index.js'
 import CloudBaseManager from '@cloudbase/manager-node'
-import { buildUserEnvPolicyStatements, buildLegacyPolicyStatements } from '../cloudbase/provision.js'
+import { buildStsInlinePolicyStatements } from '../cloudbase/provision.js'
+import { getProvisionMode } from '../lib/provision-config'
 
 export interface SessionUser {
   id: string
@@ -108,21 +109,30 @@ export function requireAuth(c: Context<AppEnv>) {
 
 // ─── 临时密钥签发 ──────────────────────────────────────────────────────
 
-// 缓存：userId -> { credentials, expireTime }
+// 缓存：`${userId}:${envId}` -> { credentials, expireTime }
+// key 必须包含 envId，因为 issueTempCredentials 签出的临时凭证 policy 是按 envId
+// 锁死的；同一用户访问不同 envId（user-level / task-level）必须分别签发，否则会
+// 用错 token 触发 "SecretId is not found" 之类错。
 const tempCredentialCache = new Map<
   string,
   { credentials: { secretId: string; secretKey: string; sessionToken: string }; expireTime: number }
 >()
 
 /**
- * 使用支撑身份签发限定在用户 envId 下的临时密钥
+ * 兜底：用支撑密钥签发临时凭证
+ *
+ * ⚠️ 见 buildStsInlinePolicyStatements 注释 —— 当前 inline policy 用 [*] on [*]
+ * （子账号支撑密钥的腾讯云限制下唯一可用形态），实际权限 = 支撑密钥本身权限的子集，
+ * **没有 envId 隔离**。生产环境应优先使用 user_resources.camSecretId/Key 永久密钥
+ * （provision 已按 envId/cosTag 隔离），这里只是没有永久密钥时的兜底。
  */
 export async function issueTempCredentials(
   envId: string,
   userId: string,
 ): Promise<{ secretId: string; secretKey: string; sessionToken: string } | undefined> {
+  const cacheKey = `${userId}:${envId}`
   // 检查缓存（提前 5 分钟过期）
-  const cached = tempCredentialCache.get(userId)
+  const cached = tempCredentialCache.get(cacheKey)
   if (cached && cached.expireTime > Date.now() / 1000 + 300) {
     return cached.credentials
   }
@@ -133,17 +143,13 @@ export async function issueTempCredentials(
 
   if (!systemSecretId || !systemSecretKey || !systemEnvId) return undefined
 
-  // 从 DB 获取用户资源信息，判断使用新版还是旧版策略
-  const resource = await getDb().userResources.findByUserId(userId)
-  const ownerUin = process.env.TENCENTCLOUD_ACCOUNT_ID || ''
-  const region = resource?.envRegion || process.env.TCB_REGION || 'ap-shanghai'
-  const cosTagValue = resource?.cosTagValue || ''
-
-  // 构建策略：有 cosTagValue 且有 ownerUin 时使用精确 ARN，否则使用旧版兼容策略
-  const policyStatements =
-    cosTagValue && ownerUin
-      ? buildUserEnvPolicyStatements({ envId, region, ownerUin, cosTagValue })
-      : buildLegacyPolicyStatements(envId)
+  // inline policy 与 envId/region/cosTag/ownerUin 无关（见函数注释），传空也无妨
+  const policyStatements = buildStsInlinePolicyStatements({
+    envId,
+    region: '',
+    ownerUin: '',
+    cosTagValue: '',
+  })
 
   try {
     const app = new CloudBaseManager({ secretId: systemSecretId, secretKey: systemSecretKey, envId: systemEnvId })
@@ -167,14 +173,21 @@ export async function issueTempCredentials(
         secretKey: creds.TmpSecretKey,
         sessionToken: creds.Token,
       }
-      tempCredentialCache.set(userId, {
+      tempCredentialCache.set(cacheKey, {
         credentials,
         expireTime: (result as any)?.ExpiredTime || Date.now() / 1000 + 7200,
       })
       return credentials
     }
-  } catch (err) {
-    console.error('[Auth] issueTempCredentials failed:', (err as Error).message)
+    console.error('[Auth] issueTempCredentials: unexpected response', JSON.stringify(result))
+  } catch (err: any) {
+    console.error('[Auth] issueTempCredentials failed', {
+      envId,
+      userId,
+      message: err?.message,
+      code: err?.code || err?.original?.Code,
+      requestId: err?.requestId || err?.original?.RequestId,
+    })
   }
   return undefined
 }
@@ -185,12 +198,10 @@ export async function issueTempCredentials(
  * 中间件：校验登录 + 环境就绪 + 解析凭证
  * 下游通过 c.get('userEnv') 获取 { envId, userId, credentials }
  *
- * envId 解析优先级（task 模式必备）：
- *   1. URL param `:taskId` → 按 taskId 查 task 级 user_resources
- *   2. Header `X-Task-Id` 或 query `taskId` → 同上（dashboard / 通用 API 用）
- *   3. user-level user_resources（shared / isolated / task 模式 fallback）
- *
- * credentials 已解析好（永久密钥 or 临时密钥），可直接使用
+ * 解析路径按 provision mode 分支：
+ *   - shared   → 直接用支撑账号 TCB_SECRET_ID/KEY + TCB_ENV_ID，不查 user_resources
+ *   - isolated → user_resources(scope='user') 永久密钥 + user-level envId
+ *   - task     → 优先 taskId hint 命中 task 级 resource；否则 envId hint；最后 user-level fallback
  */
 export async function requireUserEnv(c: Context<AppEnv>, next: Next) {
   const authErr = requireAuth(c)
@@ -199,6 +210,20 @@ export async function requireUserEnv(c: Context<AppEnv>, next: Next) {
   const session = c.get('session')!
   const userId = session.user.id
 
+  // shared 模式：所有用户共享支撑账号 env，不走 user_resources
+  const mode = await getProvisionMode()
+  if (mode === 'shared') {
+    const envId = process.env.TCB_ENV_ID
+    const secretId = process.env.TCB_SECRET_ID
+    const secretKey = process.env.TCB_SECRET_KEY
+    if (!envId || !secretId || !secretKey) {
+      return c.json({ error: 'TCB_ENV_ID / TCB_SECRET_ID / TCB_SECRET_KEY not configured (shared mode)' }, 500)
+    }
+    c.set('userEnv', { envId, userId, credentials: { secretId, secretKey } })
+    return next()
+  }
+
+  // isolated / task：从 user_resources 解析
   // 1. 先尝试按 taskId 查 task 级资源
   // taskId 来源（按优先级）：URL :taskId param > X-Task-Id header > query taskId > c.var.taskIdHint
   const taskId =

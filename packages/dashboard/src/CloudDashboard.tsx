@@ -5,6 +5,7 @@
  */
 import { useState, useEffect, useMemo } from 'react'
 import { Toaster } from 'sonner'
+import { useSetAtom } from 'jotai'
 import { Home, Database, HardDrive, Code2, Zap, PanelLeftClose, PanelLeft, PanelLeftOpen } from 'lucide-react'
 import HomePage from './pages/HomePage'
 import DatabasePage from './pages/DatabasePage'
@@ -17,6 +18,8 @@ import { cn } from './utils/helpers'
 import { setApiBase } from './services/config'
 import { ApiContextProvider } from './services/api-context'
 import type { ApiContext } from './services/http'
+import { databaseStateAtom } from './atoms/database'
+import { activeBucketAtom, storagePrefixAtom } from './atoms/storage'
 import type { Theme } from './hooks/useTheme'
 export type { Theme }
 
@@ -196,6 +199,34 @@ function ApiBaseSetter({ apiBase }: { apiBase?: string }) {
   return null
 }
 
+/**
+ * envId 变化时（含首次 mount）重置所有 env-scoped state（activeCollection、activeBucket、prefix 等）。
+ *
+ * 为何首次 mount 也要重置：
+ *   jotai atom 是 module-level 全局单例，跨路由 mount 共享。如果用户从 task A 跳到
+ *   task B（React 视角是两次新 mount，prevRef 每次都是 undefined），atom 里仍残留
+ *   task A 的 activeCollection，会发起对 task B env 里不存在的 collection 的请求。
+ */
+function EnvScopedStateReset({ envId }: { envId: string }) {
+  const setDatabaseState = useSetAtom(databaseStateAtom)
+  const setActiveBucket = useSetAtom(activeBucketAtom)
+  const setStoragePrefix = useSetAtom(storagePrefixAtom)
+  useEffect(() => {
+    setDatabaseState((prev) => ({
+      ...prev,
+      activeCollection: null,
+      documents: [],
+      total: 0,
+      currentPage: 1,
+      searchQuery: '',
+      error: null,
+    }))
+    setActiveBucket(null)
+    setStoragePrefix('')
+  }, [envId, setDatabaseState, setActiveBucket, setStoragePrefix])
+  return null
+}
+
 export function CloudDashboard({
   defaultPage,
   envId,
@@ -213,6 +244,7 @@ export function CloudDashboard({
   return (
     <ApiContextProvider value={apiCtx}>
       <ApiBaseSetter apiBase={apiBase} />
+      <EnvScopedStateReset envId={envId} />
       <div className={className} data-theme={resolvedTheme} style={{ height: '100%', ...style }}>
         <CloudShell defaultPage={defaultPage} theme={resolvedTheme} />
       </div>

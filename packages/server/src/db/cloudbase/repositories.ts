@@ -300,6 +300,7 @@ class CloudBaseTaskRepository implements TaskRepository {
       // ── Nullable defaults ──
       title: null,
       repoUrl: null,
+      envId: null,
       selectedModel: null,
       selectedRuntime: null,
       logs: null,

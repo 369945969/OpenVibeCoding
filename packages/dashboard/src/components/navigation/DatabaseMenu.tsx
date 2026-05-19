@@ -3,11 +3,13 @@ import { Search, Plus, ChevronDown, MoreHorizontal, Trash2, Copy, Shield, X, Che
 import { cn } from '../../utils/helpers'
 import { useDatabaseState } from '../../hooks/useDatabaseState'
 import { useDatabaseAPI } from '../../services/database'
+import { useApiContext } from '../../services/api-context'
 import { ContextMenu, ContextMenuItem, ContextMenuSeparator } from '../ui/ContextMenu'
 import { toast } from 'sonner'
 import CollectionPermissions from '../data/CollectionPermissions'
 
 export const DatabaseMenu = () => {
+  const { envId } = useApiContext()
   const databaseAPI = useDatabaseAPI()
   const { activeCollection, setActiveCollection } = useDatabaseState()
   const [collections, setCollections] = useState<string[]>([])
@@ -22,12 +24,25 @@ export const DatabaseMenu = () => {
   const [newName, setNewName] = useState('')
   const [saving, setSaving] = useState(false)
 
+  // envId 变化时：立刻清空集合列表（避免旧 env 的列表在新 env 短暂可见 / 被点击触发误请求），
+  // 然后重新拉。增加 AbortController 防止并发 fetch 竞态（旧 fetch 完成时不写入新 env 状态）。
   useEffect(() => {
+    let cancelled = false
+    setCollections([])
     databaseAPI
       .getCollections()
-      .then((data) => setCollections(data.map((c) => c.CollectionName)))
-      .catch(() => toast.error('加载集合失败'))
-  }, [databaseAPI])
+      .then((data) => {
+        if (cancelled) return
+        setCollections(data.map((c) => c.CollectionName))
+      })
+      .catch(() => {
+        if (cancelled) return
+        toast.error('加载集合失败')
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [databaseAPI, envId])
 
   const grouped = {
     user: collections.filter((c) => !c.startsWith('app_') && !c.startsWith('_system_') && !c.startsWith('system_')),

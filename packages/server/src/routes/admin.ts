@@ -421,79 +421,56 @@ admin.post('/users/create', async (c) => {
   })
 
   // CloudBase 环境配置（与注册逻辑一致）
+  // 仅 isolated 模式预建 user-level env；shared / task 不写 user_resources
   const provisionMode = await getProvisionMode()
 
-  if (process.env.TCB_SECRET_ID && process.env.TCB_SECRET_KEY) {
+  if (process.env.TCB_SECRET_ID && process.env.TCB_SECRET_KEY && provisionMode === 'isolated') {
     const resourceId = nanoid()
+    await db.userResources.create({
+      id: resourceId,
+      userId,
+      status: 'processing',
+      envId: null,
+      envAlias: null,
+      envRegion: null,
+      cosTagValue: null,
+      policyHash: null,
+      camUsername: null,
+      camSecretId: null,
+      camSecretKey: null,
+      policyId: null,
+      failStep: null,
+      failReason: null,
+      createdAt: now,
+      updatedAt: now,
+    })
 
-    if (provisionMode === 'isolated') {
-      await db.userResources.create({
-        id: resourceId,
-        userId,
-        status: 'processing',
-        envId: null,
-        envAlias: null,
-        envRegion: null,
-        cosTagValue: null,
-        policyHash: null,
-        camUsername: null,
-        camSecretId: null,
-        camSecretKey: null,
-        policyId: null,
-        failStep: null,
-        failReason: null,
-        createdAt: now,
-        updatedAt: now,
-      })
-
-      provisionUserResources(userId, username)
-        .then(async (result) => {
-          await getDb().userResources.update(resourceId, {
-            status: 'success',
-            envId: result.envId,
-            envAlias: result.envAlias,
-            envRegion: result.envRegion,
-            cosTagValue: result.cosTagValue,
-            policyHash: result.policyHash,
-            camUsername: result.camUsername,
-            camSecretId: result.camSecretId,
-            camSecretKey: result.camSecretKey || null,
-            policyId: result.policyId,
-            updatedAt: Date.now(),
-          })
-          console.log(`[admin-provision] User ${username} env ready: ${result.envId}`)
+    provisionUserResources(userId, username)
+      .then(async (result) => {
+        await getDb().userResources.update(resourceId, {
+          status: 'success',
+          envId: result.envId,
+          envAlias: result.envAlias,
+          envRegion: result.envRegion,
+          cosTagValue: result.cosTagValue,
+          policyHash: result.policyHash,
+          camUsername: result.camUsername,
+          camSecretId: result.camSecretId,
+          camSecretKey: result.camSecretKey || null,
+          policyId: result.policyId,
+          updatedAt: Date.now(),
         })
-        .catch(async (err) => {
-          await getDb().userResources.update(resourceId, {
-            status: 'failed',
-            failStep: err.__provisionFailStep || null,
-            failReason: err.message,
-            updatedAt: Date.now(),
-          })
-          console.error(`[admin-provision] User ${username} failed:`, err.message)
-        })
-    } else {
-      // shared 模式：直接写入主环境信息
-      await db.userResources.create({
-        id: resourceId,
-        userId,
-        status: 'success',
-        envId: process.env.TCB_ENV_ID || null,
-        envAlias: null,
-        envRegion: null,
-        cosTagValue: null,
-        policyHash: null,
-        camUsername: null,
-        camSecretId: process.env.TCB_SECRET_ID || null,
-        camSecretKey: process.env.TCB_SECRET_KEY || null,
-        policyId: null,
-        failStep: null,
-        failReason: null,
-        createdAt: now,
-        updatedAt: now,
+        console.log(`[admin-provision] User ${username} env ready: ${result.envId}`)
       })
-      console.log(`[admin-provision] User ${username} shared env: ${process.env.TCB_ENV_ID}`)
-    }
+      .catch(async (err) => {
+        await getDb().userResources.update(resourceId, {
+          status: 'failed',
+          failStep: err.__provisionFailStep || null,
+          failReason: err.message,
+          updatedAt: Date.now(),
+        })
+        console.error(`[admin-provision] User ${username} failed:`, err.message)
+      })
   }
 
   // Log the action

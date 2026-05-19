@@ -24,6 +24,7 @@ export default function DatabasePage() {
     isEditorOpen,
     editorMode,
     editingDocument,
+    setActiveCollection,
     setDocuments,
     setTotal,
     setCurrentPage,
@@ -47,13 +48,21 @@ export default function DatabasePage() {
         setError(null)
         setSelectedIds(new Set())
       } catch (err) {
-        setError(err instanceof Error ? err.message : '加载失败')
-        toast.error('加载文档失败')
+        const msg = err instanceof Error ? err.message : '加载失败'
+        // 集合已不存在（被删 / env 切换）→ 清空选中态，避免一直报同一个错
+        if (/not exist|不存在/i.test(msg)) {
+          setActiveCollection(null)
+          setError(null)
+          toast.error(`集合 "${collection}" 不存在`)
+        } else {
+          setError(msg)
+          toast.error('加载文档失败')
+        }
       } finally {
         setLoading(false)
       }
     },
-    [pageSize, setDocuments, setTotal, setLoading, setError, databaseAPI],
+    [pageSize, setDocuments, setTotal, setLoading, setError, setActiveCollection, databaseAPI],
   )
 
   useEffect(() => {
