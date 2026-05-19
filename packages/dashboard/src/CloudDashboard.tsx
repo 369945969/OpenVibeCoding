@@ -3,9 +3,9 @@
  * 不依赖 React Router，内部用 state 切换页面
  * 供外部项目直接 import 使用
  */
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useMemo } from 'react'
 import { Toaster } from 'sonner'
-import { Provider as JotaiProvider, useSetAtom } from 'jotai'
+import { useSetAtom } from 'jotai'
 import { Home, Database, HardDrive, Code2, Zap, PanelLeftClose, PanelLeft, PanelLeftOpen } from 'lucide-react'
 import HomePage from './pages/HomePage'
 import DatabasePage from './pages/DatabasePage'
@@ -15,8 +15,11 @@ import FunctionsPage from './pages/FunctionsPage'
 import { DatabaseMenu } from './components/navigation/DatabaseMenu'
 import { StorageMenu } from './components/navigation/StorageMenu'
 import { cn } from './utils/helpers'
-import { envIdAtom } from './atoms/env'
 import { setApiBase } from './services/config'
+import { ApiContextProvider } from './services/api-context'
+import type { ApiContext } from './services/http'
+import { databaseStateAtom } from './atoms/database'
+import { activeBucketAtom, storagePrefixAtom } from './atoms/storage'
 import type { Theme } from './hooks/useTheme'
 export type { Theme }
 
@@ -176,7 +179,13 @@ function CloudShell({ defaultPage, theme = 'dark' }: { defaultPage?: CloudPage; 
 
 interface CloudDashboardProps {
   defaultPage?: CloudPage
-  envId?: string
+  /** CloudBase 环境 ID — 必填。所有 API 请求都会显式带上 ?envId=xxx */
+  envId: string
+  /**
+   * 当 CloudDashboard 嵌入在某个 task 详情页时传入。所有 API 请求会带上 X-Task-Id header，
+   * 让后端 middleware 按 task 级 user_resources 解析凭证（task provision 模式必备）。
+   */
+  taskId?: string
   apiBase?: string
   theme?: Theme
   className?: string
@@ -190,25 +199,56 @@ function ApiBaseSetter({ apiBase }: { apiBase?: string }) {
   return null
 }
 
-function EnvIdSetter({ envId }: { envId?: string }) {
-  const setEnvId = useSetAtom(envIdAtom)
+/**
+ * envId 变化时（含首次 mount）重置所有 env-scoped state（activeCollection、activeBucket、prefix 等）。
+ *
+ * 为何首次 mount 也要重置：
+ *   jotai atom 是 module-level 全局单例，跨路由 mount 共享。如果用户从 task A 跳到
+ *   task B（React 视角是两次新 mount，prevRef 每次都是 undefined），atom 里仍残留
+ *   task A 的 activeCollection，会发起对 task B env 里不存在的 collection 的请求。
+ */
+function EnvScopedStateReset({ envId }: { envId: string }) {
+  const setDatabaseState = useSetAtom(databaseStateAtom)
+  const setActiveBucket = useSetAtom(activeBucketAtom)
+  const setStoragePrefix = useSetAtom(storagePrefixAtom)
   useEffect(() => {
-    if (envId) setEnvId(envId)
-  }, [envId, setEnvId])
+    setDatabaseState((prev) => ({
+      ...prev,
+      activeCollection: null,
+      documents: [],
+      total: 0,
+      currentPage: 1,
+      searchQuery: '',
+      error: null,
+    }))
+    setActiveBucket(null)
+    setStoragePrefix('')
+  }, [envId, setDatabaseState, setActiveBucket, setStoragePrefix])
   return null
 }
 
-export function CloudDashboard({ defaultPage, envId, apiBase, theme, className = '', style }: CloudDashboardProps) {
+export function CloudDashboard({
+  defaultPage,
+  envId,
+  taskId,
+  apiBase,
+  theme,
+  className = '',
+  style,
+}: CloudDashboardProps) {
   const resolvedTheme = theme ?? 'dark'
 
+  // 稳定引用：useMemo 让 ctx 在 envId/taskId 不变时复用同一对象
+  const apiCtx: ApiContext = useMemo(() => ({ envId, taskId }), [envId, taskId])
+
   return (
-    <JotaiProvider>
+    <ApiContextProvider value={apiCtx}>
       <ApiBaseSetter apiBase={apiBase} />
-      <EnvIdSetter envId={envId} />
+      <EnvScopedStateReset envId={envId} />
       <div className={className} data-theme={resolvedTheme} style={{ height: '100%', ...style }}>
         <CloudShell defaultPage={defaultPage} theme={resolvedTheme} />
       </div>
-    </JotaiProvider>
+    </ApiContextProvider>
   )
 }
 

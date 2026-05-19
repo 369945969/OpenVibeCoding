@@ -300,6 +300,7 @@ class CloudBaseTaskRepository implements TaskRepository {
       // ── Nullable defaults ──
       title: null,
       repoUrl: null,
+      envId: null,
       selectedModel: null,
       selectedRuntime: null,
       logs: null,
@@ -704,12 +705,42 @@ class CloudBaseUserResourceRepository implements UserResourceRepository {
   async findByUserId(userId: string): Promise<UserResource | null> {
     const _ = getCommand()
     const collection = await getCollection('user_resources')
+    // Return user-scoped resource (scope='user'), backwards compatible
     const { data } = await collection
-      .where({ userId: _.eq(userId) })
+      .where({ userId: _.eq(userId), scope: _.eq('user') })
+      .limit(1)
+      .get()
+    if (!data || data.length === 0) {
+      // Fallback: old records without scope field
+      const { data: legacy } = await collection
+        .where({ userId: _.eq(userId) })
+        .limit(1)
+        .get()
+      if (!legacy || legacy.length === 0) return null
+      return stripCloudBaseId<UserResource>(legacy[0] as Record<string, unknown>)
+    }
+    return stripCloudBaseId<UserResource>(data[0] as Record<string, unknown>)
+  }
+
+  async findByTaskId(taskId: string): Promise<UserResource | null> {
+    const _ = getCommand()
+    const collection = await getCollection('user_resources')
+    const { data } = await collection
+      .where({ scope: _.eq('task'), taskId: _.eq(taskId) })
       .limit(1)
       .get()
     if (!data || data.length === 0) return null
     return stripCloudBaseId<UserResource>(data[0] as Record<string, unknown>)
+  }
+
+  async findAllByUserId(userId: string): Promise<UserResource[]> {
+    const _ = getCommand()
+    const collection = await getCollection('user_resources')
+    const { data } = await collection
+      .where({ userId: _.eq(userId) })
+      .limit(1000)
+      .get()
+    return (data as Record<string, unknown>[]).map((doc) => stripCloudBaseId<UserResource>(doc))
   }
 
   async create(resource: NewUserResource): Promise<UserResource> {
@@ -717,6 +748,8 @@ class CloudBaseUserResourceRepository implements UserResourceRepository {
     const ts = now()
     const doc: UserResource = {
       ...resource,
+      scope: resource.scope || 'user',
+      taskId: resource.taskId ?? null,
       createdAt: resource.createdAt ?? ts,
       updatedAt: resource.updatedAt ?? ts,
     }
@@ -734,6 +767,12 @@ class CloudBaseUserResourceRepository implements UserResourceRepository {
       .get()
     if (!rows || rows.length === 0) return null
     return stripCloudBaseId<UserResource>(rows[0] as Record<string, unknown>)
+  }
+
+  async deleteById(id: string): Promise<void> {
+    const _ = getCommand()
+    const collection = await getCollection('user_resources')
+    await collection.where({ id: _.eq(id) }).remove()
   }
 }
 
@@ -763,13 +802,16 @@ class CloudBaseSettingRepository implements SettingRepository {
 
   async upsert(setting: NewSetting): Promise<Setting> {
     const ts = now()
-    const existing = await this.findByUserIdAndKey(setting.userId, setting.key)
+    const existing = setting.userId
+      ? await this.findByUserIdAndKey(setting.userId, setting.key)
+      : await this.findSystemSetting(setting.key)
     if (existing) {
       const _ = getCommand()
       const collection = await getCollection('settings')
-      await collection
-        .where({ userId: _.eq(setting.userId), key: _.eq(setting.key) })
-        .update({ value: setting.value, updatedAt: ts })
+      const condition = setting.userId
+        ? { userId: _.eq(setting.userId), key: _.eq(setting.key) }
+        : { userId: _.eq(null), key: _.eq(setting.key) }
+      await collection.where(condition).update({ value: setting.value, updatedAt: ts })
       return { ...existing, value: setting.value, updatedAt: ts }
     }
     const collection = await getCollection('settings')
@@ -781,6 +823,38 @@ class CloudBaseSettingRepository implements SettingRepository {
     }
     await collection.add(doc)
     return doc
+  }
+
+  async findSystemSetting(key: string): Promise<Setting | null> {
+    const _ = getCommand()
+    const collection = await getCollection('settings')
+    const { data } = await collection
+      .where({ userId: _.eq(null), key: _.eq(key) })
+      .limit(1)
+      .get()
+    if (!data || data.length === 0) return null
+    return stripCloudBaseId<Setting>(data[0] as Record<string, unknown>)
+  }
+
+  async upsertSystemSetting(key: string, value: string): Promise<Setting> {
+    return this.upsert({ id: nanoid(), userId: null, key, value })
+  }
+
+  async deleteSystemSetting(key: string): Promise<boolean> {
+    const _ = getCommand()
+    const collection = await getCollection('settings')
+    const result = await collection.where({ userId: _.eq(null), key: _.eq(key) }).remove()
+    return ((result as any).deleted ?? 0) > 0
+  }
+
+  async findAllSystemSettings(): Promise<Setting[]> {
+    const _ = getCommand()
+    const collection = await getCollection('settings')
+    const { data } = await collection
+      .where({ userId: _.eq(null) })
+      .limit(1000)
+      .get()
+    return (data as Record<string, unknown>[]).map((doc) => stripCloudBaseId<Setting>(doc))
   }
 }
 

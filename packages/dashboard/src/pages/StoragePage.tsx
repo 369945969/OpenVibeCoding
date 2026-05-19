@@ -1,7 +1,7 @@
 import { useEffect, useState, useRef } from 'react'
 import COS from 'cos-js-sdk-v5'
-import { storageAPI, BucketInfo, FileInfo } from '../services/storage'
-import { capiClient } from '../services/capi'
+import { useStorageAPI, BucketInfo, FileInfo } from '../services/storage'
+import { useCapiClient } from '../services/capi'
 import { Button } from '../components/ui'
 import {
   FileUp,
@@ -88,6 +88,8 @@ function BucketCard({ bucket }: { bucket: BucketInfo }) {
 }
 
 export default function StoragePage() {
+  const storageAPI = useStorageAPI()
+  const capiClient = useCapiClient()
   const [activeBucket] = useAtom(activeBucketAtom)
   const [prefix, setPrefix] = useAtom(storagePrefixAtom)
   const [files, setFiles] = useState<FileInfo[]>([])
@@ -120,35 +122,17 @@ export default function StoragePage() {
     let successCount = 0
 
     try {
-      const stsRes = (await capiClient.sts('GetFederationToken', {
-        Name: 'dashboard-upload',
-        DurationSeconds: 1800,
-        Policy: JSON.stringify({
-          version: '2.0',
-          statement: [
-            {
-              action: [
-                'cos:PutObject',
-                'cos:PostObject',
-                'cos:InitiateMultipartUpload',
-                'cos:UploadPart',
-                'cos:CompleteMultipartUpload',
-                'cos:AbortMultipartUpload',
-              ],
-              effect: 'allow',
-              resource: [`qcs::cos:${activeBucket.region}:uid/*:${activeBucket.bucket}/*`],
-            },
-          ],
-        }),
-      })) as any
+      // 后端把当前用户已解析的临时凭证（限定到 envId / cos tag）下发给前端，
+      // 前端直接用它走 cos-js-sdk 上传，避免再次 GetFederationToken。
+      const cred = await storageAPI.getUploadCredential()
 
       const cos = new COS({
         getAuthorization: (_: any, callback: any) => {
           callback({
-            TmpSecretId: stsRes.Credentials.TmpSecretId,
-            TmpSecretKey: stsRes.Credentials.TmpSecretKey,
-            SecurityToken: stsRes.Credentials.Token,
-            ExpiredTime: stsRes.ExpiredTime,
+            TmpSecretId: cred.tmpSecretId,
+            TmpSecretKey: cred.tmpSecretKey,
+            SecurityToken: cred.sessionToken,
+            ExpiredTime: cred.expiredTime,
           })
         },
       })

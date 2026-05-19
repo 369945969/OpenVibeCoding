@@ -10,6 +10,7 @@ import {
   deleteHostingFile,
 } from '../cloudbase/storage.js'
 import { createManager } from '../cloudbase/database.js'
+import CloudBaseManager from '@cloudbase/manager-node'
 // @ts-ignore — COS SDK has no bundled types in some versions
 import COS from 'cos-nodejs-sdk-v5'
 
@@ -127,6 +128,78 @@ router.get('/presign', requireUserEnv, async (c) => {
   } catch (e: any) {
     console.error('[storage/presign] error:', e)
     return c.json({ error: e.message }, 500)
+  }
+})
+
+// ---------------------------------------------------------------------------
+// POST /api/storage/upload-credential
+//
+// 给前端 cos-js-sdk 直传用的临时凭证。
+//
+// 实现：用一份"永久密钥"调 STS GetFederationToken 现签一份新鲜的临时凭证（duration
+// = 1800s），下发给前端。永久密钥来源优先级：
+//   1. 当前 userEnv 是永久密钥（camSecretId/Key）—— 直接用
+//   2. 否则用支撑账号 (TCB_SECRET_ID/KEY)
+//
+// 为什么不直接下发 userEnv 的临时凭证：那份临时凭证可能已经接近过期，且无法
+// 再向下 grant cos（GrantOtherResource）。
+// 永远不直接把永久密钥下发给前端。
+// ---------------------------------------------------------------------------
+router.post('/upload-credential', requireUserEnv, async (c) => {
+  try {
+    const { credentials, envId } = c.get('userEnv')!
+
+    // 选 grant-capable 永久密钥
+    let signerSecretId: string
+    let signerSecretKey: string
+    if (!credentials.sessionToken && credentials.secretId && credentials.secretKey) {
+      // 用户级永久密钥
+      signerSecretId = credentials.secretId
+      signerSecretKey = credentials.secretKey
+    } else if (process.env.TCB_SECRET_ID && process.env.TCB_SECRET_KEY) {
+      // 支撑账号永久密钥
+      signerSecretId = process.env.TCB_SECRET_ID
+      signerSecretKey = process.env.TCB_SECRET_KEY
+    } else {
+      return c.json({ error: '没有可用的永久密钥用于签发临时凭证' }, 500)
+    }
+
+    const app = new CloudBaseManager({
+      secretId: signerSecretId,
+      secretKey: signerSecretKey,
+      envId,
+    })
+
+    const result: any = await app.commonService('sts', '2018-08-13').call({
+      Action: 'GetFederationToken',
+      Param: {
+        Name: 'dashboard-upload',
+        DurationSeconds: 1800,
+        // 限定到 cos:*（凭证不会比签发账号本身更宽）
+        Policy: JSON.stringify({
+          version: '2.0',
+          statement: [{ action: ['cos:*'], effect: 'allow', resource: ['*'] }],
+        }),
+      },
+    })
+
+    const creds = result?.Credentials
+    if (!creds?.TmpSecretId || !creds?.TmpSecretKey || !creds?.Token) {
+      return c.json({ error: 'STS 未返回临时凭证', requestId: result?.RequestId }, 500)
+    }
+
+    return c.json({
+      tmpSecretId: creds.TmpSecretId,
+      tmpSecretKey: creds.TmpSecretKey,
+      sessionToken: creds.Token,
+      expiredTime: result?.ExpiredTime,
+      envId,
+      requestId: result?.RequestId,
+    })
+  } catch (e: any) {
+    const requestId = e?.requestId || e?.original?.RequestId
+    const code = e?.code || e?.original?.Code
+    return c.json({ error: e?.message || '签发失败', code, requestId }, 500)
   }
 })
 

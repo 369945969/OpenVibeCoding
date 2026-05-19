@@ -62,6 +62,8 @@ export const tasks = sqliteTable(
     prompt: text('prompt').notNull(),
     title: text('title'),
     repoUrl: text('repo_url'),
+    // CloudBase environment ID used for this task (resolved at creation from provision mode)
+    envId: text('env_id'),
     selectedAgent: text('selected_agent').default('claude'),
     selectedModel: text('selected_model'),
     selectedRuntime: text('selected_runtime'), // 'tencent-sdk' | 'opencode-acp' | null (null = registry default)
@@ -210,6 +212,10 @@ export const userResources = sqliteTable('user_resources', {
   userId: text('user_id')
     .notNull()
     .references(() => users.id, { onDelete: 'cascade' }),
+  // scope: 'user' = user-level env (shared/isolated), 'task' = task-level env
+  scope: text('scope').notNull().default('user'),
+  // taskId: only set when scope='task', links this env resource to a specific task
+  taskId: text('task_id').references(() => tasks.id, { onDelete: 'set null' }),
   status: text('status').notNull().default('pending'),
   envId: text('env_id'),
   envAlias: text('env_alias'),
@@ -232,9 +238,9 @@ export const settings = sqliteTable(
   'settings',
   {
     id: text('id').primaryKey(),
-    userId: text('user_id')
-      .notNull()
-      .references(() => users.id, { onDelete: 'cascade' }),
+    // userId = null  →  system-level setting (not tied to any user)
+    // userId = <id>  →  per-user setting
+    userId: text('user_id').references(() => users.id, { onDelete: 'cascade' }),
     key: text('key').notNull(),
     value: text('value').notNull(),
     createdAt: integer('created_at').notNull().$defaultFn(now),

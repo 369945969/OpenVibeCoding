@@ -3,6 +3,7 @@ import { getDb } from '../db/index.js'
 import { requireAdmin, type AppEnv } from '../middleware/admin'
 import { issueTempCredentials } from '../middleware/auth.js'
 import { provisionUserResources, destroyProvisionedResources } from '../cloudbase/provision.js'
+import { getProvisionMode, isValidProvisionMode, resolveProvisionMode } from '../lib/provision-config.js'
 import { persistenceService } from '../agent/persistence.service.js'
 import { nanoid } from 'nanoid'
 import bcrypt from 'bcryptjs'
@@ -275,15 +276,50 @@ admin.delete('/users/:userId', async (c) => {
     userAgent: c.req.header('user-agent') || null,
   })
 
-  // Clean up cloud resources (CAM user, policy, CloudBase env) before deleting DB records
-  const resource = await db.userResources.findByUserId(userId)
-  if (resource) {
-    await destroyProvisionedResources({
-      camUsername: resource.camUsername,
-      policyId: resource.policyId,
-      envId: resource.envId,
-      cosTagValue: resource.cosTagValue,
-    })
+  // Clean up cloud resources before deleting DB records.
+  // 用户名下所有 user_resources（user-level + 每个 task-level）都要清：
+  //   - CAM 子账号 + AccessKey
+  //   - CAM 自定义策略
+  //   - COS Tag
+  //   - CloudBase 环境
+  // 任一资源未清干净 → 保留 user_resources + users，返回错误让 admin 重试。
+  const resources = await db.userResources.findAllByUserId(userId)
+  const remaining: { resourceId: string; failed: unknown[] }[] = []
+  for (const resource of resources) {
+    let result: Awaited<ReturnType<typeof destroyProvisionedResources>> | null = null
+    try {
+      result = await destroyProvisionedResources({
+        camUsername: resource.camUsername,
+        policyId: resource.policyId,
+        envId: resource.envId,
+        cosTagValue: resource.cosTagValue,
+      })
+    } catch (e: any) {
+      console.warn('[admin.deleteUser] destroy threw', { id: resource.id, message: e?.message })
+      remaining.push({ resourceId: resource.id, failed: [{ message: e?.message }] })
+      continue
+    }
+    if (result.failed.length > 0) {
+      console.warn('[admin.deleteUser] partial failure', { id: resource.id, failed: result.failed })
+      remaining.push({ resourceId: resource.id, failed: result.failed })
+      continue
+    }
+    // 全清干净才删 DB row
+    try {
+      await db.userResources.deleteById(resource.id)
+    } catch {
+      // best-effort：DB 删不掉但云资源已清，留待孤立扫描脚本
+    }
+  }
+
+  if (remaining.length > 0) {
+    return c.json(
+      {
+        error: '部分云资源清理失败，用户保留可重试',
+        remaining,
+      },
+      409,
+    )
   }
 
   await db.users.deleteById(userId)
@@ -420,79 +456,56 @@ admin.post('/users/create', async (c) => {
   })
 
   // CloudBase 环境配置（与注册逻辑一致）
-  const provisionMode = process.env.TCB_PROVISION_MODE || 'shared'
+  // 仅 isolated 模式预建 user-level env；shared / task 不写 user_resources
+  const provisionMode = await getProvisionMode()
 
-  if (process.env.TCB_SECRET_ID && process.env.TCB_SECRET_KEY) {
+  if (process.env.TCB_SECRET_ID && process.env.TCB_SECRET_KEY && provisionMode === 'isolated') {
     const resourceId = nanoid()
+    await db.userResources.create({
+      id: resourceId,
+      userId,
+      status: 'processing',
+      envId: null,
+      envAlias: null,
+      envRegion: null,
+      cosTagValue: null,
+      policyHash: null,
+      camUsername: null,
+      camSecretId: null,
+      camSecretKey: null,
+      policyId: null,
+      failStep: null,
+      failReason: null,
+      createdAt: now,
+      updatedAt: now,
+    })
 
-    if (provisionMode === 'isolated') {
-      await db.userResources.create({
-        id: resourceId,
-        userId,
-        status: 'processing',
-        envId: null,
-        envAlias: null,
-        envRegion: null,
-        cosTagValue: null,
-        policyHash: null,
-        camUsername: null,
-        camSecretId: null,
-        camSecretKey: null,
-        policyId: null,
-        failStep: null,
-        failReason: null,
-        createdAt: now,
-        updatedAt: now,
-      })
-
-      provisionUserResources(userId, username)
-        .then(async (result) => {
-          await getDb().userResources.update(resourceId, {
-            status: 'success',
-            envId: result.envId,
-            envAlias: result.envAlias,
-            envRegion: result.envRegion,
-            cosTagValue: result.cosTagValue,
-            policyHash: result.policyHash,
-            camUsername: result.camUsername,
-            camSecretId: result.camSecretId,
-            camSecretKey: result.camSecretKey || null,
-            policyId: result.policyId,
-            updatedAt: Date.now(),
-          })
-          console.log(`[admin-provision] User ${username} env ready: ${result.envId}`)
+    provisionUserResources(userId, username)
+      .then(async (result) => {
+        await getDb().userResources.update(resourceId, {
+          status: 'success',
+          envId: result.envId,
+          envAlias: result.envAlias,
+          envRegion: result.envRegion,
+          cosTagValue: result.cosTagValue,
+          policyHash: result.policyHash,
+          camUsername: result.camUsername,
+          camSecretId: result.camSecretId,
+          camSecretKey: result.camSecretKey || null,
+          policyId: result.policyId,
+          updatedAt: Date.now(),
         })
-        .catch(async (err) => {
-          await getDb().userResources.update(resourceId, {
-            status: 'failed',
-            failStep: err.__provisionFailStep || null,
-            failReason: err.message,
-            updatedAt: Date.now(),
-          })
-          console.error(`[admin-provision] User ${username} failed:`, err.message)
-        })
-    } else {
-      // shared 模式：直接写入主环境信息
-      await db.userResources.create({
-        id: resourceId,
-        userId,
-        status: 'success',
-        envId: process.env.TCB_ENV_ID || null,
-        envAlias: null,
-        envRegion: null,
-        cosTagValue: null,
-        policyHash: null,
-        camUsername: null,
-        camSecretId: process.env.TCB_SECRET_ID || null,
-        camSecretKey: process.env.TCB_SECRET_KEY || null,
-        policyId: null,
-        failStep: null,
-        failReason: null,
-        createdAt: now,
-        updatedAt: now,
+        console.log(`[admin-provision] User ${username} env ready: ${result.envId}`)
       })
-      console.log(`[admin-provision] User ${username} shared env: ${process.env.TCB_ENV_ID}`)
-    }
+      .catch(async (err) => {
+        await getDb().userResources.update(resourceId, {
+          status: 'failed',
+          failStep: err.__provisionFailStep || null,
+          failReason: err.message,
+          updatedAt: Date.now(),
+        })
+        console.error(`[admin-provision] User ${username} failed:`, err.message)
+      })
   }
 
   // Log the action
@@ -925,6 +938,103 @@ admin.post('/proxy/:envId/functions/:name/invoke', async (c) => {
     const body = await c.req.json()
     const result = await manager.functions.invokeFunction(name, body)
     return c.json({ result: result.RetMsg })
+  } catch (e: any) {
+    return c.json({ error: e.message }, 500)
+  }
+})
+
+// ─── System Settings ──────────────────────────────────────────────────────
+
+admin.get('/system-settings', async (c) => {
+  try {
+    const db = getDb()
+    const allSettings = await db.settings.findAllSystemSettings()
+
+    const settingsMap: Record<string, string> = {}
+    for (const s of allSettings) {
+      settingsMap[s.key] = s.value
+    }
+
+    // 对 provision_mode：返回值的来源信息（前端用于展示标签 + 重置按钮）
+    const pm = await resolveProvisionMode()
+    settingsMap['provision_mode'] = pm.value
+
+    return c.json({
+      settings: settingsMap,
+      meta: {
+        provision_mode: {
+          source: pm.source, // 'db' | 'env' | 'default'
+          envDefault: pm.envDefault, // 用户重置后会回落到的值
+        },
+      },
+    })
+  } catch (e: any) {
+    return c.json({ error: e.message }, 500)
+  }
+})
+
+admin.put('/system-settings/:key', async (c) => {
+  try {
+    const { key } = c.req.param()
+    const body = await c.req.json()
+    const { value } = body
+
+    if (!value || typeof value !== 'string') {
+      return c.json({ error: 'value is required' }, 400)
+    }
+
+    // Validate known settings
+    if (key === 'provision_mode') {
+      if (!isValidProvisionMode(value)) {
+        return c.json({ error: 'Invalid provision mode. Must be: shared, isolated, or task' }, 400)
+      }
+    }
+
+    const db = getDb()
+    const setting = await db.settings.upsertSystemSetting(key, value)
+
+    // Log the action
+    const adminUser = c.get('session')!.user
+    await db.adminLogs.create({
+      id: nanoid(),
+      adminUserId: adminUser.id,
+      action: 'system_setting_update',
+      targetUserId: null,
+      details: JSON.stringify({ key, value }),
+      ipAddress: c.req.header('x-forwarded-for') || c.req.header('x-real-ip') || null,
+      userAgent: c.req.header('user-agent') || null,
+    })
+
+    return c.json({ success: true, setting: { key: setting.key, value: setting.value } })
+  } catch (e: any) {
+    return c.json({ error: e.message }, 500)
+  }
+})
+
+/**
+ * DELETE /system-settings/:key — 重置为环境变量默认值。
+ * 删除 DB 中的 system setting，让 getProvisionMode() 回落到 env / 内置默认。
+ */
+admin.delete('/system-settings/:key', async (c) => {
+  try {
+    const { key } = c.req.param()
+    const db = getDb()
+    const existed = await db.settings.deleteSystemSetting(key)
+
+    if (existed) {
+      const adminUser = c.get('session')!.user
+      await db.adminLogs.create({
+        id: nanoid(),
+        adminUserId: adminUser.id,
+        action: 'system_setting_reset',
+        targetUserId: null,
+        details: JSON.stringify({ key }),
+        ipAddress: c.req.header('x-forwarded-for') || c.req.header('x-real-ip') || null,
+        userAgent: c.req.header('user-agent') || null,
+      })
+    }
+
+    return c.json({ success: true, existed })
   } catch (e: any) {
     return c.json({ error: e.message }, 500)
   }

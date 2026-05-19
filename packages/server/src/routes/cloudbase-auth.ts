@@ -63,7 +63,8 @@ cloudbaseAuth.post('/login', async (c) => {
       // Provision CloudBase resources for new user
       if (process.env.TCB_SECRET_ID && process.env.TCB_SECRET_KEY) {
         const resourceId = nanoid()
-        const provisionMode = process.env.TCB_PROVISION_MODE || 'shared'
+        const { getProvisionMode } = await import('../lib/provision-config.js')
+        const provisionMode = await getProvisionMode()
 
         if (provisionMode === 'isolated') {
           await getDb().userResources.create({

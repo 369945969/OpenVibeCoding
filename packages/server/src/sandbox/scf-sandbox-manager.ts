@@ -476,8 +476,15 @@ export class ScfSandboxManager {
           },
         },
         Environment: {
-          Variables: [...this.buildGitArchiveVars(), ...this.buildGitPersonalVars()],
+          Variables: [
+            ...this.buildGitArchiveVars(),
+            { Key: 'VITE_DEV_OVERLAY', Value: process.env.VITE_DEV_OVERLAY || '' },
+          ],
         },
+        // VpcConfig: {
+        //   VpcId: '',
+        //   SubnetId: '',
+        // },
         Description: 'SCF Sandbox for conversation (Image-based)',
       }
 

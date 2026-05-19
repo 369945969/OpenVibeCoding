@@ -36,8 +36,11 @@ export interface ProvisionResult {
 export function buildUserEnvPolicyStatements(params: PolicyBuildParams) {
   const { envId, region, ownerUin, cosTagValue } = params
 
+  // 注意：腾讯云 STS GetFederationToken 对单 statement 的 action 数量有上限（约 40-50）。
+  // 这里把全局只读/管理 action 拆成多个 statement（每个 ≤ 30），以便此 policy 既能
+  // 写入 CAM 自定义策略，也能直接作为 inline policy 传给 STS GetFederationToken。
   return [
-    // Statement 1: 全局只读/管理 action（resource: *）
+    // Statement 1a: cam / cdn / organization / lowcode 只读
     {
       action: [
         'cam:CreateRole',
@@ -60,16 +63,23 @@ export function buildUserEnvPolicyStatements(params: PolicyBuildParams) {
         'lowcode:GetMaxAppNum',
         'lowcode:DescribeApps',
 
+        'ssl:DescribeCertificateDetail',
+        'ssl:DescribeCertificates',
+      ],
+      effect: 'allow',
+      resource: ['*'],
+    },
+    // Statement 1b: tcb 元信息 / 账户 / 通用计费查询
+    {
+      action: [
         'tcb:CheckTcbService',
         'tcb:DescribePackages',
         'tcb:DescribeEnvLimit',
         'tcb:DescribeBillingInfo',
-        'tcb:DescribeExtensionsInstalled',
-        'tcb:DescribeExtensions',
+        'tcb:DescribeExt*',
         'tcb:DescribeCloudBaseRunAdvancedConfiguration',
         'tcb:DescribePostPackage',
         'tcb:DescribeICPResources',
-        'tcb:DescribeExtensionUpgrade',
         'tcb:DescribeMonitorMetric',
         'tcb:DescribeLowCodeUserQuotaUsage',
         'tcb:DescribeEnvStatistics',
@@ -77,10 +87,8 @@ export function buildUserEnvPolicyStatements(params: PolicyBuildParams) {
         'tcb:CheckFeaturePermission',
         'tcb:DescribeCommonBillingResources',
         'tcb:DescribeCommonBillingPackages',
-        'tcb:DescribeExtraPackages',
         'tcb:DescribeAgentList',
         'tcb:DescribeTenant',
-
         'tcb:GetTemplateAPIsList',
         'tcb:GetApisGroupAndList',
         'tcb:GetUserKeyList',
@@ -91,13 +99,19 @@ export function buildUserEnvPolicyStatements(params: PolicyBuildParams) {
         'tcb:RefreshAuthDomain',
         'tcb:DescribeActivityInfo',
         'tcb:DescribeTcbAccountInfo',
+      ],
+      effect: 'allow',
+      resource: ['*'],
+    },
+    // Statement 1c: tcb 模板 / 数据库 / 函数（CAM 以主账号鉴权，必须 resource: *）
+    {
+      action: [
         'tcb:DescribeAIModels',
         'tcb:DescribeOperationAppTemplates',
         'tcb:DescribeSolutionList',
         'tcb:DescribeCloudBaseRunBaseImages',
         'tcb:DescribeBuildServiceList',
 
-        // 数据库操作（CAM 以主账号鉴权，必须 resource: *）
         'tcb:DeleteTable',
         'tcb:CreateTable',
         'tcb:DescribeTable',
@@ -116,16 +130,12 @@ export function buildUserEnvPolicyStatements(params: PolicyBuildParams) {
         'tcb:DescribeRestoreTask',
         'tcb:DescribeRestoreTables',
 
-        // 云函数操作（CAM 以主账号鉴权，必须 resource: *）
         'tcb:CreateFunction',
         'tcb:UpdateFunctionCode',
         'tcb:UpdateFunctionIncrementalCode',
         'tcb:GetFunctionLogsStatus',
         'tcb:GetFunctionLogDetail',
         'tcb:GetFunctionLogs',
-
-        'ssl:DescribeCertificateDetail',
-        'ssl:DescribeCertificates',
       ],
       effect: 'allow',
       resource: ['*'],
@@ -169,63 +179,31 @@ export function buildUserEnvPolicyStatements(params: PolicyBuildParams) {
 }
 
 /**
- * 旧版策略构建器（兼容未迁移用户）
- * 临时密钥签发时，如果用户缺少 cosTagValue，使用此函数保持向后兼容
+ * STS GetFederationToken inline policy 专用（兜底）
+ *
+ * ⚠️ 现状说明：
+ *   支撑密钥（TCB_SECRET_ID/KEY）当前是子账号身份。腾讯云对子账号调
+ *   GetFederationToken 有奇葩限制：
+ *   - inline policy 中如果含 `qcs::tcb:region:uin/<主账号 uin>:env/...` 这种
+ *     ARN，签出来的 token 调 tcb 接口会被服务端判 invalid token（即便 grant
+ *     成功）；
+ *   - 即使 ARN 写 `*`，只要 action 列出 `tcb:*`、`tcbr:*` 等具体服务，token
+ *     调 tcb 接口仍会 invalid（见实测）；
+ *   - 唯一能让 token 真正可用的 inline 写法：`{ action: ['*'], resource: ['*'] }`
+ *
+ * 换句话说，inline policy 在子账号支撑密钥签发场景下**做不到 envId 收紧**。
+ * 真正的 envId 隔离已经在 provision 阶段通过 buildUserEnvPolicyStatements
+ * 写到了每个用户的 CAM 子账号大 policy 上 —— middleware 优先用 user_resources
+ * 表里的永久密钥（camSecretId/camSecretKey）走 permanent 分支；
+ * 这里只是 user_resources 没有永久密钥时的兜底，签发出来的临时凭证有效但
+ * 没做隔离收紧（与支撑账号本身权限一致）。
+ *
+ * 后续如果支撑账号换成主账号 root 密钥或申请到 sts:GetFederationToken 跨 uin
+ * grant 权限，再回来加 envId ARN 限定。
  */
-export function buildLegacyPolicyStatements(envId: string) {
-  return [
-    {
-      action: [
-        'cam:CreateRole',
-        'cam:AttachRolePolicy',
-        'cam:ListAttachedRolePolicies',
-        'cam:UpdatePolicy',
-        'cam:CreateServiceLinkedRole',
-        'cam:DescribeServiceLinkedRole',
-        'cam:GetRole',
-        'cdn:TcbCheckResource',
-        'tcb:DescribeAgentList',
-        'tcb:GetTemplateAPIsList',
-        'tcb:DescribeTenant',
-        'tcb:CheckTcbService',
-        'tcb:GetApisGroupAndList',
-        'tcb:DescribePackages',
-        'tcb:DescribeEnvLimit',
-        'tcb:GetUserKeyList',
-        'tcb:DescribeBillingInfo',
-        'tcb:DescribeExtensionsInstalled',
-        'tcb:DescribeExtensions',
-        'tcb:DescribePostPackage',
-        'tcb:DescribeICPResources',
-        'tcb:DescribeExtensionUpgrade',
-        'tcb:DescribeMonitorMetric',
-        'tcb:CheckFeaturePermission',
-        'tcb:DescribeCommonBillingResources',
-        'tcb:DescribeCommonBillingPackages',
-        'tcb:DescribeExtraPackages',
-        'tcb:CreateFunction',
-        'tcb:UpdateFunctionCode',
-        'tcb:QueryRecords',
-        'tcb:PutItem',
-        'tcb:UpdateItem',
-        'tcb:DeleteItem',
-        'tcb:CreateTable',
-        'tcb:ListTables',
-        'ssl:DescribeCertificateDetail',
-        'ssl:DescribeCertificates',
-      ],
-      effect: 'allow',
-      resource: ['*'],
-    },
-    { action: ['tcb:*'], effect: 'allow', resource: [`qcs::tcb:::env/${envId}`] },
-    { action: ['tcbr:*'], effect: 'allow', resource: [`qcs::tcbr:::env/${envId}`] },
-    { action: ['lowcode:*'], effect: 'allow', resource: [`qcs::lowcode:::env/${envId}`] },
-    { action: ['cos:*'], effect: 'allow', resource: ['*'] },
-    { action: ['scf:*'], effect: 'allow', resource: ['*'] },
-    { action: ['cls:*'], effect: 'allow', resource: ['*'] },
-  ]
+export function buildStsInlinePolicyStatements(_params: PolicyBuildParams) {
+  return [{ action: ['*'], effect: 'allow', resource: ['*'] }]
 }
-
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
 function getClients() {
@@ -387,14 +365,23 @@ function generatePassword(length = 16): string {
 // ─── Main Provision Flow ─────────────────────────────────────────────────────
 
 /**
- * 为新注册用户创建 CloudBase 资源：
+ * 为用户/任务创建 CloudBase 资源：
  * 1. CAM 子账号 + API 密钥
  * 2. COS Tag（用于 bucket 隔离）
  * 3. CloudBase 环境（带 Tags）
  * 4. 等待环境就绪
  * 5. 权限策略（精确 ARN + tag condition）
+ *
+ * scope 区分：
+ *   - 不传 taskId → user 级，CAM username = `vibe_{userId}`，每个 user 一个 CAM 子账号
+ *   - 传 taskId   → task 级，CAM username = `vibe_t_{taskId}`，每个 task 一个独立子账号
+ *     （避免多 task 共用同一 CAM user 时 AccessKey 互相轮换覆盖）
  */
-export async function provisionUserResources(userId: string, username: string): Promise<ProvisionResult> {
+export async function provisionUserResources(
+  userId: string,
+  username: string,
+  options?: { taskId?: string },
+): Promise<ProvisionResult> {
   const { camClient, tcbClient, tagClient } = getClients()
   const ownerUin = await getOwnerUin()
   let currentStep = 'cam_user'
@@ -402,7 +389,10 @@ export async function provisionUserResources(userId: string, username: string): 
   try {
     // ─── 步骤 1：创建 CAM 子账号 ─────────────────────────────────
     currentStep = 'cam_user'
-    const camUsername = `vibe_${userId.substring(0, 20)}`
+    // task 级：用 taskId 派生独立 CAM 用户名；否则用 userId（保持 user 级行为不变）
+    const camUsername = options?.taskId
+      ? `vibe_t_${options.taskId.substring(0, 18)}`
+      : `vibe_${userId.substring(0, 20)}`
     let subAccountUin: number
     let camSecretId: string = ''
     let camSecretKey: string = ''
@@ -608,25 +598,56 @@ export async function rollbackProvisionedResources(result: Partial<ProvisionResu
 }
 
 /**
- * 删除用户时完整清理腾讯云资源（CAM 子用户 + 策略 + Tag + 云开发环境）
- * 尽力清理，单项失败不阻塞其他操作
+ * 删除用户/任务时清理腾讯云资源（CAM 子用户 + 策略 + Tag + 云开发环境）
+ *
+ * 返回每一步的结果。调用方应根据 `failed` 决定是否阻止 DB 删除：
+ *   - failed.length === 0 → 全部清掉（含已不存在的视为幂等成功）→ 可以删 DB row
+ *   - failed.length > 0   → 还有资源没清干净（如 env 仍在初始化）→ 保留 DB row，下次重试
+ *
+ * "已不存在"（NotFound 类错误）视为幂等成功，不计入 failed。
  */
+export interface DestroyStepResult {
+  step: 'tag' | 'policy' | 'cam_user' | 'env'
+  status: 'ok' | 'not_found' | 'failed' | 'skipped'
+  message?: string
+  code?: string
+  requestId?: string
+}
+
 export async function destroyProvisionedResources(resource: {
   camUsername?: string | null
   policyId?: number | null
   envId?: string | null
   cosTagValue?: string | null
-}): Promise<void> {
+}): Promise<{ steps: DestroyStepResult[]; failed: DestroyStepResult[] }> {
   const { camClient, tcbClient, tagClient } = getClients()
+  const steps: DestroyStepResult[] = []
+
+  const isNotFound = (e: any): boolean => {
+    const code: string = e?.code || e?.original?.Code || ''
+    const msg: string = (e?.message || '').toString()
+    return (
+      /NotExist|NotFound|NoSuch|ResourceNotFound|UnauthorizedOperation\.NotExist/i.test(code) ||
+      /not exist|不存在|已删除|user does not exist/i.test(msg)
+    )
+  }
 
   // 删除 Tag
   if (resource.cosTagValue) {
     try {
       await (tagClient as any).DeleteTag({ TagKey: 'vibe-env', TagValue: resource.cosTagValue })
       console.log('[provision] Tag deleted')
-    } catch {
-      // best-effort
+      steps.push({ step: 'tag', status: 'ok' })
+    } catch (e: any) {
+      if (isNotFound(e)) {
+        steps.push({ step: 'tag', status: 'not_found', message: e?.message })
+      } else {
+        console.warn('[provision] Tag delete failed', { message: e?.message, code: e?.code })
+        steps.push({ step: 'tag', status: 'failed', message: e?.message, code: e?.code, requestId: e?.requestId })
+      }
     }
+  } else {
+    steps.push({ step: 'tag', status: 'skipped' })
   }
 
   // 删除 CAM 策略
@@ -634,9 +655,17 @@ export async function destroyProvisionedResources(resource: {
     try {
       await (camClient as any).DeletePolicy({ PolicyId: [resource.policyId] })
       console.log('[provision] CAM policy deleted')
-    } catch {
-      // best-effort
+      steps.push({ step: 'policy', status: 'ok' })
+    } catch (e: any) {
+      if (isNotFound(e)) {
+        steps.push({ step: 'policy', status: 'not_found', message: e?.message })
+      } else {
+        console.warn('[provision] CAM policy delete failed', { message: e?.message, code: e?.code })
+        steps.push({ step: 'policy', status: 'failed', message: e?.message, code: e?.code, requestId: e?.requestId })
+      }
     }
+  } else {
+    steps.push({ step: 'policy', status: 'skipped' })
   }
 
   // 删除 CAM 子账号（级联删除 API 密钥）
@@ -644,20 +673,45 @@ export async function destroyProvisionedResources(resource: {
     try {
       await (camClient as any).DeleteUser({ Name: resource.camUsername, Force: 1 })
       console.log('[provision] CAM user deleted')
-    } catch {
-      // best-effort
+      steps.push({ step: 'cam_user', status: 'ok' })
+    } catch (e: any) {
+      if (isNotFound(e)) {
+        steps.push({ step: 'cam_user', status: 'not_found', message: e?.message })
+      } else {
+        console.warn('[provision] CAM user delete failed', { message: e?.message, code: e?.code })
+        steps.push({ step: 'cam_user', status: 'failed', message: e?.message, code: e?.code, requestId: e?.requestId })
+      }
     }
+  } else {
+    steps.push({ step: 'cam_user', status: 'skipped' })
   }
 
   // 销毁 CloudBase 环境
   if (resource.envId && resource.envId !== process.env.TCB_ENV_ID) {
     // 不删除支撑环境（shared 模式下 envId === TCB_ENV_ID）
+    // BypassCheck=true 跳过资源占用检查；IsForce=true 处理隔离期 env（欠费过期）
+    const destroyParams = { EnvId: resource.envId, BypassCheck: true, IsForce: true }
     try {
-      await (tcbClient as any).DestroyEnv({ EnvId: resource.envId })
-      console.log('[provision] CloudBase env destroyed')
-    } catch (e) {
-      console.log('[provision] CloudBase env destroy error:', e)
-      // best-effort
+      await (tcbClient as any).DestroyEnv(destroyParams)
+      console.log('[provision] CloudBase env destroyed', { envId: resource.envId })
+      steps.push({ step: 'env', status: 'ok' })
+    } catch (e: any) {
+      if (isNotFound(e)) {
+        steps.push({ step: 'env', status: 'not_found', message: e?.message })
+      } else {
+        console.warn('[provision] CloudBase env destroy failed', {
+          envId: resource.envId,
+          message: e?.message,
+          code: e?.code,
+          requestId: e?.requestId,
+        })
+        steps.push({ step: 'env', status: 'failed', message: e?.message, code: e?.code, requestId: e?.requestId })
+      }
     }
+  } else {
+    steps.push({ step: 'env', status: 'skipped' })
   }
+
+  const failed = steps.filter((s) => s.status === 'failed')
+  return { steps, failed }
 }

@@ -1,26 +1,40 @@
 import { useState, useEffect } from 'react'
 import { HardDrive, Globe } from 'lucide-react'
 import { useAtom } from 'jotai'
-import { storageAPI, BucketInfo } from '../../services/storage'
+import { useStorageAPI, BucketInfo } from '../../services/storage'
+import { useApiContext } from '../../services/api-context'
 import { activeBucketAtom, storagePrefixAtom } from '../../atoms/storage'
 import { cn } from '../../utils/helpers'
 
 export const StorageMenu = () => {
+  const { envId } = useApiContext()
+  const storageAPI = useStorageAPI()
   const [buckets, setBuckets] = useState<BucketInfo[]>([])
   const [loading, setLoading] = useState(true)
   const [activeBucket, setActiveBucket] = useAtom(activeBucketAtom)
   const [, setPrefix] = useAtom(storagePrefixAtom)
 
+  // envId 切换时：清空旧 bucket 列表，重拉；加 cancelled 防竞态
   useEffect(() => {
+    let cancelled = false
+    setBuckets([])
+    setLoading(true)
     storageAPI
       .getBuckets()
       .then((data) => {
+        if (cancelled) return
         setBuckets(data)
         if (data.length > 0 && !activeBucket) setActiveBucket(data[0])
       })
       .catch(() => {})
-      .finally(() => setLoading(false))
-  }, [])
+      .finally(() => {
+        if (!cancelled) setLoading(false)
+      })
+    return () => {
+      cancelled = true
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [storageAPI, envId])
 
   const handleSelect = (b: BucketInfo) => {
     setActiveBucket(b)

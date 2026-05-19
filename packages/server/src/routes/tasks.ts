@@ -11,6 +11,12 @@ import { Octokit } from '@octokit/rest'
 import { deleteArchiveBranch, SandboxInstance } from '../sandbox/index.js'
 import { persistenceService } from '../agent/persistence.service'
 import { deleteConversationViaSandbox, scfSandboxManager, archiveToGit } from '../sandbox/index.js'
+import {
+  destroyProvisionedResources,
+  provisionUserResources,
+  rollbackProvisionedResources,
+} from '../cloudbase/provision.js'
+import { getProvisionMode } from '../lib/provision-config.js'
 import type { Octokit as OctokitType } from '@octokit/rest'
 import type { Task } from '../db/types.js'
 import { GitService } from '../services/git/git'
@@ -317,15 +323,126 @@ tasksRouter.post('/', async (c) => {
   const taskId = body.id || nanoid(12)
   const now = Date.now()
 
-  // Compute sandbox config based on WORKSPACE_ISOLATION env var
+  // 解析 envId：根据 provision_mode 决定 task.envId 怎么来
+  //   - shared:   直接用 TCB_ENV_ID（不写 user_resources）
+  //   - isolated: 复用 user_resources(scope='user') 的 envId（已在注册时预建；缺失时懒建兜底）
+  //   - task:     同步建独立 env，env ready 后才返回 task
+  const provisionMode = await getProvisionMode()
+  let taskEnvId: string | null = null
   let sandboxConfig: ReturnType<typeof resolveSandboxConfig> | null = null
-  try {
-    const resource = await getDb().userResources.findByUserId(session.user.id)
-    if (resource?.envId) {
-      sandboxConfig = resolveSandboxConfig({ envId: resource.envId, taskId })
+  let provisionedResourceId: string | null = null
+  let provisionedCamUsername: string | null = null
+
+  if (provisionMode === 'task') {
+    // 同步创建 task 级独立环境
+    if (!process.env.TCB_SECRET_ID || !process.env.TCB_SECRET_KEY) {
+      return c.json({ error: 'TCB_SECRET_ID/KEY 未配置，无法创建 task 级环境' }, 500)
     }
-  } catch {
-    // Non-critical: sandbox config will be computed at agent launch time
+    try {
+      console.log('[tasks.create] provisioning task env synchronously', { taskId })
+      const result = await provisionUserResources(session.user.id, session.user.username, { taskId })
+      provisionedCamUsername = result.camUsername
+      // 写入 user_resources（scope='task'）
+      provisionedResourceId = nanoid()
+      await getDb().userResources.create({
+        id: provisionedResourceId,
+        userId: session.user.id,
+        scope: 'task',
+        taskId,
+        status: 'success',
+        envId: result.envId,
+        envAlias: result.envAlias,
+        envRegion: result.envRegion,
+        cosTagValue: result.cosTagValue,
+        policyHash: result.policyHash,
+        camUsername: result.camUsername,
+        camSecretId: result.camSecretId,
+        camSecretKey: result.camSecretKey || null,
+        policyId: result.policyId,
+        failStep: null,
+        failReason: null,
+        createdAt: now,
+        updatedAt: now,
+      })
+      taskEnvId = result.envId
+      sandboxConfig = resolveSandboxConfig({ envId: result.envId, taskId })
+      console.log('[tasks.create] task env ready', { taskId, envId: result.envId })
+    } catch (err) {
+      console.error('[tasks.create] task env provision failed:', (err as Error).message)
+      // 回滚已创建的腾讯云资源（best-effort）
+      try {
+        await rollbackProvisionedResources({
+          camUsername: provisionedCamUsername || `vibe_t_${taskId.substring(0, 18)}`,
+        })
+      } catch {
+        // best-effort
+      }
+      return c.json({ error: '创建 task 级 CloudBase 环境失败：' + (err as Error).message }, 500)
+    }
+  } else if (provisionMode === 'shared') {
+    // shared 模式：直接用支撑账号 env，无需 user_resources
+    if (process.env.TCB_ENV_ID) {
+      taskEnvId = process.env.TCB_ENV_ID
+      sandboxConfig = resolveSandboxConfig({ envId: process.env.TCB_ENV_ID, taskId })
+    }
+  } else {
+    // isolated：复用 user-level env；缺失时懒建兜底（覆盖 mode 切换场景）
+    try {
+      let resource = await getDb().userResources.findByUserId(session.user.id)
+      if (!resource?.envId || resource.status !== 'success') {
+        if (!process.env.TCB_SECRET_ID || !process.env.TCB_SECRET_KEY) {
+          return c.json({ error: 'TCB_SECRET_ID/KEY 未配置，无法创建 user-level 环境' }, 500)
+        }
+        console.log('[tasks.create] lazily provisioning user-level env for isolated mode')
+        const result = await provisionUserResources(session.user.id, session.user.username)
+        if (resource?.id) {
+          await getDb().userResources.update(resource.id, {
+            status: 'success',
+            envId: result.envId,
+            envAlias: result.envAlias,
+            envRegion: result.envRegion,
+            cosTagValue: result.cosTagValue,
+            policyHash: result.policyHash,
+            camUsername: result.camUsername,
+            camSecretId: result.camSecretId,
+            camSecretKey: result.camSecretKey || null,
+            policyId: result.policyId,
+            failStep: null,
+            failReason: null,
+            updatedAt: Date.now(),
+          })
+        } else {
+          await getDb().userResources.create({
+            id: nanoid(),
+            userId: session.user.id,
+            scope: 'user',
+            taskId: null,
+            status: 'success',
+            envId: result.envId,
+            envAlias: result.envAlias,
+            envRegion: result.envRegion,
+            cosTagValue: result.cosTagValue,
+            policyHash: result.policyHash,
+            camUsername: result.camUsername,
+            camSecretId: result.camSecretId,
+            camSecretKey: result.camSecretKey || null,
+            policyId: result.policyId,
+            failStep: null,
+            failReason: null,
+            createdAt: now,
+            updatedAt: now,
+          })
+        }
+        resource = await getDb().userResources.findByUserId(session.user.id)
+      }
+      if (resource?.envId) {
+        taskEnvId = resource.envId
+        sandboxConfig = resolveSandboxConfig({ envId: resource.envId, taskId })
+      }
+    } catch (err) {
+      console.error('[tasks.create] isolated user-level lazy provision failed:', (err as Error).message)
+      return c.json({ error: '创建用户级 CloudBase 环境失败：' + (err as Error).message }, 500)
+    }
   }
 
   await getDb().tasks.create({
@@ -334,6 +451,7 @@ tasksRouter.post('/', async (c) => {
     prompt,
     title: null,
     repoUrl: repoUrl || null,
+    envId: taskEnvId,
     selectedAgent,
     selectedModel: selectedModel || null,
     selectedRuntime: selectedRuntime || null,
@@ -407,12 +525,67 @@ tasksRouter.patch('/:taskId', async (c) => {
 })
 
 // Delete task (soft delete + git archive cleanup)
+//
+// 销毁顺序：先清云资源，确认全部清完后才软删 task。云资源未清完（如 env 仍在初始化）
+// 视为本次删除失败，task 保留可见，user_resources 保留可重试。
 tasksRouter.delete('/:taskId', requireUserEnv, async (c) => {
   const session = c.get('session')!
   const { envId } = c.get('userEnv')!
   const { taskId } = c.req.param()
   const existing = await getDb().tasks.findByIdAndUserId(taskId, session.user.id)
   if (!existing || existing.deletedAt) return c.json({ error: 'Task not found' }, 404)
+
+  // Step 1: 同步清理 task-scoped 云资源（仅 task 模式下存在）
+  const taskResource = await getDb().userResources.findByTaskId(taskId)
+  if (taskResource && taskResource.scope === 'task') {
+    console.log('[task-delete] destroying task-scoped resources', {
+      resourceId: taskResource.id,
+      envId: taskResource.envId,
+      camUsername: taskResource.camUsername,
+      policyId: taskResource.policyId,
+      cosTagValue: taskResource.cosTagValue,
+    })
+    let result: Awaited<ReturnType<typeof destroyProvisionedResources>>
+    try {
+      result = await destroyProvisionedResources({
+        camUsername: taskResource.camUsername,
+        policyId: taskResource.policyId,
+        envId: taskResource.envId,
+        cosTagValue: taskResource.cosTagValue,
+      })
+    } catch (e: any) {
+      console.warn('[task-delete] destroyProvisionedResources threw', { message: e?.message })
+      return c.json(
+        {
+          error: '云资源清理失败，请稍后重试',
+          detail: e?.message,
+        },
+        500,
+      )
+    }
+    if (result.failed.length > 0) {
+      console.warn('[task-delete] some resources failed to destroy, keeping task & user_resources', {
+        failed: result.failed,
+      })
+      return c.json(
+        {
+          error: '部分云资源清理失败，请稍后重试',
+          failed: result.failed,
+        },
+        409,
+      )
+    }
+    // 云资源全清干净，删 user_resources DB row
+    try {
+      await getDb().userResources.deleteById(taskResource.id)
+      console.log('[task-delete] user_resources row removed', { resourceId: taskResource.id })
+    } catch (e: any) {
+      console.warn('[task-delete] failed to delete user_resources row', { message: e?.message })
+      // 云资源已清，但 DB row 删不掉 —— 仍允许 task 软删（避免用户卡住）；下次会被孤立检测脚本清掉
+    }
+  }
+
+  // Step 2: 云资源已清干净（或本来就没有 task-scope 资源），软删 task
   await getDb().tasks.softDelete(taskId)
 
   // conversationId === taskId (ACP convention)

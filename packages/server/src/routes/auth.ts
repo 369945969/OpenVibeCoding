@@ -75,94 +75,73 @@ auth.post('/register', async (c) => {
     const sessionValue = await encryptJWE(session, '1y')
 
     // CloudBase 环境配置
-    // TCB_PROVISION_MODE=isolated → 同步创建独立环境（需 CAM 权限密钥）
-    // TCB_PROVISION_MODE=shared   → 复用主环境 TCB_ENV_ID（默认，即时就绪）
-    const provisionMode = process.env.TCB_PROVISION_MODE || 'shared'
+    // provision_mode:
+    //   - shared   → 不写 user_resources（运行时直接用支撑账号）
+    //   - isolated → 同步预建独立 env / CAM / AK / Policy（注册阻塞 ~30s）
+    //   - task     → 注册时不建，待用户首次创建 task 时为该 task 单独建
+    const { getProvisionMode } = await import('../lib/provision-config.js')
+    const provisionMode = await getProvisionMode()
 
-    if (process.env.TCB_SECRET_ID && process.env.TCB_SECRET_KEY) {
+    if (process.env.TCB_SECRET_ID && process.env.TCB_SECRET_KEY && provisionMode === 'isolated') {
       const resourceId = nanoid()
 
-      if (provisionMode === 'isolated') {
-        // 同步创建独立环境，失败则回滚账号
-        try {
-          await getDb().userResources.create({
-            id: resourceId,
-            userId,
-            status: 'processing',
-            envId: null,
-            envAlias: null,
-            envRegion: null,
-            cosTagValue: null,
-            policyHash: null,
-            camUsername: null,
-            camSecretId: null,
-            camSecretKey: null,
-            policyId: null,
-            failStep: null,
-            failReason: null,
-            createdAt: now,
-            updatedAt: now,
-          })
-
-          const result = await provisionUserResources(userId, trimmedUsername)
-          await getDb().userResources.update(resourceId, {
-            status: 'success',
-            envId: result.envId,
-            envAlias: result.envAlias,
-            envRegion: result.envRegion,
-            cosTagValue: result.cosTagValue,
-            policyHash: result.policyHash,
-            camUsername: result.camUsername,
-            camSecretId: result.camSecretId,
-            camSecretKey: result.camSecretKey || null,
-            policyId: result.policyId,
-            updatedAt: Date.now(),
-          })
-          console.log(`[provision] User env ready`)
-        } catch (err) {
-          // 环境创建失败，回滚云端资源和本地账号
-          console.error('[provision] Failed, rolling back:', (err as Error).message)
-          // 回滚已创建的腾讯云资源（CAM 子账号、策略等）
-          try {
-            const partialResult: Partial<import('../cloudbase/provision.js').ProvisionResult> = {}
-            // provisionUserResources 可能部分成功，从错误上下文中尽力提取已创建资源信息
-            // CAM username 是可预测的
-            partialResult.camUsername = `vibe_${userId.substring(0, 20)}`
-            await rollbackProvisionedResources(partialResult)
-          } catch {
-            // rollback best-effort
-          }
-          // 回滚数据库账号
-          try {
-            await getDb().users.deleteById(userId)
-          } catch {
-            // rollback best-effort
-          }
-          return c.json({ error: 'Failed to create cloud environment, please try again later' }, 500)
-        }
-      } else {
-        // shared 模式：直接写入主环境信息，即时就绪
+      // 同步创建独立环境，失败则回滚账号
+      try {
         await getDb().userResources.create({
           id: resourceId,
           userId,
-          status: 'success',
-          envId: process.env.TCB_ENV_ID || null,
+          status: 'processing',
+          envId: null,
           envAlias: null,
           envRegion: null,
           cosTagValue: null,
           policyHash: null,
           camUsername: null,
-          camSecretId: process.env.TCB_SECRET_ID || null,
-          camSecretKey: process.env.TCB_SECRET_KEY || null,
+          camSecretId: null,
+          camSecretKey: null,
           policyId: null,
           failStep: null,
           failReason: null,
           createdAt: now,
           updatedAt: now,
         })
-        console.log(`[provision] Shared env configured`)
+
+        const result = await provisionUserResources(userId, trimmedUsername)
+        await getDb().userResources.update(resourceId, {
+          status: 'success',
+          envId: result.envId,
+          envAlias: result.envAlias,
+          envRegion: result.envRegion,
+          cosTagValue: result.cosTagValue,
+          policyHash: result.policyHash,
+          camUsername: result.camUsername,
+          camSecretId: result.camSecretId,
+          camSecretKey: result.camSecretKey || null,
+          policyId: result.policyId,
+          updatedAt: Date.now(),
+        })
+        console.log(`[provision] User env ready`)
+      } catch (err) {
+        // 环境创建失败，回滚云端资源和本地账号
+        console.error('[provision] Failed, rolling back:', (err as Error).message)
+        try {
+          const partialResult: Partial<import('../cloudbase/provision.js').ProvisionResult> = {}
+          partialResult.camUsername = `vibe_${userId.substring(0, 20)}`
+          await rollbackProvisionedResources(partialResult)
+        } catch {
+          // rollback best-effort
+        }
+        try {
+          await getDb().users.deleteById(userId)
+        } catch {
+          // rollback best-effort
+        }
+        return c.json({ error: 'Failed to create cloud environment, please try again later' }, 500)
       }
     }
+    // shared / task：注册不做 provision，user_resources 留空。
+    //   - shared 模式：middleware 直接用 TCB_SECRET_ID/KEY + TCB_ENV_ID
+    //   - task 模式：用户首次创建 task 时为该 task 单独建独立资源
 
     setCookie(c, SESSION_COOKIE_NAME, sessionValue, {
       path: '/',
@@ -337,6 +316,24 @@ auth.get('/me', async (c) => {
 auth.get('/provision-status', async (c) => {
   const session = c.get('session')
   if (!session?.user?.id) return c.json({ error: 'Unauthorized' }, 401)
+
+  const { getProvisionMode } = await import('../lib/provision-config.js')
+  const provisionMode = await getProvisionMode()
+
+  // shared / task 模式注册时不写 user_resources：
+  //   - shared 永远 ready（直接用支撑账号）
+  //   - task 注册时 ready，待用户创建 task 时各自 provision
+  if (provisionMode === 'shared' || provisionMode === 'task') {
+    return c.json({
+      status: 'success',
+      envId: provisionMode === 'shared' ? process.env.TCB_ENV_ID || null : null,
+      camUsername: null,
+      camSecretId: null,
+      failReason: null,
+      createdAt: null,
+      updatedAt: null,
+    })
+  }
 
   const resource = await getDb().userResources.findByUserId(session.user.id)
 

@@ -49,6 +49,31 @@ acp.use('/*', async (c, next) => {
   if (scopes !== undefined && !scopes.includes('acp')) {
     return c.json({ error: 'API key does not have ACP scope' }, 403)
   }
+
+  // 从 JSON-RPC body 提取 conversationId/sessionId 作为 taskIdHint，
+  // 让 requireUserEnv 能按 task 级解析 envId（task provision 模式必备）。
+  // hono 缓存 body，下游 handler 再调 c.req.json() 不会出错。
+  if (c.req.method === 'POST') {
+    try {
+      const body = (await c.req.json().catch(() => null)) as {
+        params?: { conversationId?: string; sessionId?: string }
+        conversationId?: string
+      } | null
+      const hint =
+        body?.params?.conversationId ??
+        body?.params?.sessionId ??
+        body?.conversationId ??
+        c.req.header('X-Task-Id') ??
+        undefined
+      if (hint) {
+        c.set('taskIdHint', hint)
+        console.log('[acp middleware] taskIdHint set from body', { path: p, hint })
+      }
+    } catch {
+      // 解析失败不影响主流程
+    }
+  }
+
   return requireUserEnv(c, next)
 })
 

@@ -105,7 +105,7 @@ export class AcpClient {
     const res = await fetchWithRetry(this.baseUrl, {
       method: 'POST',
       credentials: 'include',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', ...(this.taskId ? { 'X-Task-Id': this.taskId } : {}) },
       body: JSON.stringify(body),
     })
 
@@ -137,7 +137,7 @@ export class AcpClient {
       await fetch(this.baseUrl, {
         method: 'POST',
         credentials: 'include',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...(this.taskId ? { 'X-Task-Id': this.taskId } : {}) },
         body: JSON.stringify({ jsonrpc: '2.0', method, params }),
       })
     } catch {
@@ -160,7 +160,7 @@ export class AcpClient {
     const res = await fetch(this.baseUrl, {
       method: 'POST',
       credentials: 'include',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', ...(this.taskId ? { 'X-Task-Id': this.taskId } : {}) },
       body: JSON.stringify(body),
       signal,
     })

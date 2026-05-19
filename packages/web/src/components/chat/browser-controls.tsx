@@ -1,91 +1,83 @@
 import { useEffect, useState } from 'react'
 import { ArrowLeft, ArrowRight, Loader2, RotateCw } from 'lucide-react'
+import type { PreviewBridge, HmrStatus } from '@/hooks/use-preview-bridge'
 
 /**
  * BrowserControls — 预览 iframe 的浏览器工具栏
  *
- * 功能:
- *   - 前进 / 后退 / 刷新
- *   - 可编辑地址栏(相对路径),回车触发 iframe 导航
- *   - loading 状态：刷新按钮变 spinner，禁用交互
- *
- * 实现说明:
- *   - 前进/后退:iframe.contentWindow.history.back/forward(仅当 iframe 同源可用)
- *   - 刷新:走 onHardRefresh → 父级重新调 preview-url 接口验证沙箱状态
- *   - 地址栏只编辑 pathname,保持 origin 不变;回车时把 `origin + newPath` 赋值给 iframe.src
- *
- * 安全:跨域 iframe 时 contentWindow.history 访问会抛 DOMException,内部 try/catch 吞掉。
+ * 通过 PreviewBridge 发送 postMessage 指令控制 iframe 导航，
+ * 并通过 currentPath prop 实时同步 iframe 内部 SPA 路由。
+ * 支持 hash router 模式（`/#/path`）的正确解析与同步。
  */
 interface BrowserControlsProps {
-  /** 预览 URL 的完整地址(提取 origin 作为导航基础) */
+  /** 预览 URL 的完整地址(提取 origin 作为显示基础) */
   previewUrl: string
-  /** 外部传入的 iframe ref,BrowserControls 不拥有 iframe */
-  iframeRef: React.RefObject<HTMLIFrameElement | null>
+  /** PreviewBridge 实例，提供 navigate / back / forward / reload 指令 */
+  bridge: PreviewBridge
   /** 刷新时让父级重新调 preview-url 接口验证沙箱状态 */
   onHardRefresh?: () => void
   /** 是否正在加载（preview-url 接口进行中） */
   loading?: boolean
+  /** iframe 内部当前路径（由 preview:url-changed 事件推送），自动同步到地址栏 */
+  currentPath?: string
+  /** HMR 连接状态 */
+  hmrStatus?: HmrStatus
   className?: string
 }
 
-export function BrowserControls({ previewUrl, iframeRef, onHardRefresh, loading, className }: BrowserControlsProps) {
-  // 地址栏编辑内容(只存 pathname + search,不含 host)
-  const [urlValue, setUrlValue] = useState(() => extractPathFromUrl(previewUrl))
+export function BrowserControls({
+  previewUrl,
+  bridge,
+  onHardRefresh,
+  loading,
+  currentPath,
+  hmrStatus = 'unknown',
+  className,
+}: BrowserControlsProps) {
+  // 地址栏编辑内容(只存可视路径部分)
+  const [urlValue, setUrlValue] = useState(() => extractDisplayPath(previewUrl))
+  // 是否正在手动编辑地址栏（手动编辑时不自动同步）
+  const [editing, setEditing] = useState(false)
 
   // previewUrl 由外部更新时(如切换任务 / 重启预览),同步到输入框
   useEffect(() => {
-    setUrlValue(extractPathFromUrl(previewUrl))
-  }, [previewUrl])
-
-  const baseUrl = (() => {
-    try {
-      const u = new URL(previewUrl)
-      return `${u.protocol}//${u.host}`
-    } catch {
-      return previewUrl
+    if (!editing) {
+      setUrlValue(extractDisplayPath(previewUrl))
     }
-  })()
+  }, [previewUrl, editing])
 
-  const navigate = (path: string) => {
+  // iframe 内部路由变化时自动同步地址栏（仅在非编辑状态下）
+  useEffect(() => {
+    if (currentPath && !editing) {
+      setUrlValue(currentPath)
+    }
+  }, [currentPath, editing])
+
+  const handleNavigate = (path: string) => {
     if (loading) return
-    const iframe = iframeRef.current
-    if (!iframe) return
-    const normalizedPath = path.startsWith('/') ? path : `/${path}`
+    const normalizedPath = path.startsWith('/') || path.startsWith('#') ? path : `/${path}`
     setUrlValue(normalizedPath)
-    iframe.src = `${baseUrl}${normalizedPath}`
+    setEditing(false)
+    bridge.navigate(normalizedPath)
   }
 
   const handleReload = () => {
     if (loading) return
-    // 走硬刷新：让父级重新调 preview-url 接口验证沙箱状态。
-    // 沙箱已就绪时后端秒回，不会有感知延迟；沙箱销毁时会自动重建。
     if (onHardRefresh) {
       onHardRefresh()
       return
     }
-    // fallback: 如果没传 onHardRefresh，走 iframe src 重赋值
-    const iframe = iframeRef.current
-    if (iframe) {
-      iframe.src = iframe.src
-    }
+    bridge.reload()
   }
 
   const handleBack = () => {
     if (loading) return
-    try {
-      iframeRef.current?.contentWindow?.history.back()
-    } catch {
-      // 跨域 iframe 不可访问 history — 静默降级
-    }
+    bridge.navigateBack()
   }
 
   const handleForward = () => {
     if (loading) return
-    try {
-      iframeRef.current?.contentWindow?.history.forward()
-    } catch {
-      // 跨域 iframe 不可访问 history — 静默降级
-    }
+    bridge.navigateForward()
   }
 
   return (
@@ -120,17 +112,21 @@ export function BrowserControls({ previewUrl, iframeRef, onHardRefresh, loading,
       >
         {loading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RotateCw className="h-3.5 w-3.5" />}
       </button>
+      {/* HMR 连接状态指示灯 */}
+      <HmrIndicator status={hmrStatus} />
       <form
         className="ml-1 flex-1 min-w-0"
         onSubmit={(e) => {
           e.preventDefault()
-          navigate(urlValue)
+          handleNavigate(urlValue)
         }}
       >
         <input
           type="text"
           value={urlValue}
           onChange={(e) => setUrlValue(e.target.value)}
+          onFocus={() => setEditing(true)}
+          onBlur={() => setEditing(false)}
           disabled={loading}
           className="h-6 w-full rounded-md bg-muted/50 px-2 text-[11px] text-foreground transition-colors outline-none focus:bg-muted focus:ring-1 focus:ring-ring disabled:opacity-50"
           aria-label="URL 路径"
@@ -141,10 +137,40 @@ export function BrowserControls({ previewUrl, iframeRef, onHardRefresh, loading,
   )
 }
 
-function extractPathFromUrl(url: string): string {
+// ─── HMR Status Indicator ───────────────────────────────────────────────────
+
+const HMR_STATUS_CONFIG: Record<HmrStatus, { color: string; title: string }> = {
+  unknown: { color: 'bg-muted-foreground/30', title: '等待连接...' },
+  connected: { color: 'bg-emerald-500', title: 'HMR 已连接' },
+  disconnected: { color: 'bg-destructive', title: 'HMR 已断开' },
+  reconnecting: { color: 'bg-amber-500 animate-pulse', title: 'HMR 重连中...' },
+}
+
+function HmrIndicator({ status }: { status: HmrStatus }) {
+  const config = HMR_STATUS_CONFIG[status]
+  return (
+    <span
+      className={`inline-block size-2 rounded-full flex-shrink-0 ${config.color}`}
+      title={config.title}
+      aria-label={config.title}
+    />
+  )
+}
+
+// ─── URL Helpers ────────────────────────────────────────────────────────────
+
+/**
+ * Extract display path from full URL.
+ * Handles both pathname-based routing and hash routing (`/#/path`).
+ */
+function extractDisplayPath(url: string): string {
   try {
     const u = new URL(url)
-    return u.pathname + u.search
+    // Hash router: `/#/dashboard` → display `#/dashboard`
+    if (u.hash && u.hash.startsWith('#/')) {
+      return u.hash
+    }
+    return u.pathname + u.search + u.hash
   } catch {
     return '/'
   }

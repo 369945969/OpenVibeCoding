@@ -276,13 +276,15 @@ githubAuth.get('/callback', async (c) => {
       }
 
       // Provision CloudBase resources for new users
+      // 仅 isolated 模式需要预建 user-level env；shared / task 不写 user_resources
       if (process.env.TCB_SECRET_ID && process.env.TCB_SECRET_KEY) {
         const existingResource = await getDb().userResources.findByUserId(userId)
         if (!existingResource) {
-          const resourceId = nanoid()
-          const provisionMode = process.env.TCB_PROVISION_MODE || 'shared'
+          const { getProvisionMode } = await import('../lib/provision-config.js')
+          const provisionMode = await getProvisionMode()
 
           if (provisionMode === 'isolated') {
+            const resourceId = nanoid()
             await getDb().userResources.create({
               id: resourceId,
               userId,
@@ -325,26 +327,8 @@ githubAuth.get('/callback', async (c) => {
                   updatedAt: Date.now(),
                 })
               })
-          } else {
-            await getDb().userResources.create({
-              id: resourceId,
-              userId,
-              status: 'success',
-              envId: process.env.TCB_ENV_ID || null,
-              envAlias: null,
-              envRegion: null,
-              cosTagValue: null,
-              policyHash: null,
-              camUsername: null,
-              camSecretId: process.env.TCB_SECRET_ID || null,
-              camSecretKey: process.env.TCB_SECRET_KEY || null,
-              policyId: null,
-              failStep: null,
-              failReason: null,
-              createdAt: now,
-              updatedAt: now,
-            })
           }
+          // shared / task：不写 user_resources，运行时按 mode 解析
         }
       }
 
@@ -389,6 +373,9 @@ githubAuth.get('/callback', async (c) => {
 
         if (connectedUserId !== storedUserId) {
           // Merge accounts: transfer everything from old user to new user
+          // TODO: user_resources 暂不迁移；如果旧账号在 isolated/task 模式下创建了云资源，
+          // 删旧 user 时这些资源不会被清理（DB row 因 onDelete:cascade 会级联删，但腾讯云资源遗留）。
+          // 当前合并场景罕见，先留 TODO，需要时再加 transferUserResources / destroyUserResources 逻辑。
           await getDb().tasks.updateUserId(connectedUserId, storedUserId!)
           await getDb().connectors.updateUserId(connectedUserId, storedUserId!)
           await getDb().accounts.updateUserId(connectedUserId, storedUserId!)

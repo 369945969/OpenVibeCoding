@@ -4,6 +4,39 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+- **CodeBuddy 自定义模型支持**：`CODEBUDDY_USE_CUSTOM_MODELS=true` 时按 `.config/.codebuddy/models.json` 模板加载模型列表，前端 listModels / SDK modelId 校验都走自定义白名单；`false` 时保留 SYSTEM_MODELS 写死的官方列表
+- **环境隔离粒度配置**（Issue #14）：admin 可在 `/admin/settings` 切换 `shared` / `isolated` / `task` 三种 provision mode，DB 优先级高于 env 默认，配 source badge 与重置按钮
+- **CloudBase MCP 通用 middleware 框架**：`lib/mcp-middleware/` 提供 koa 风格中间件，配置驱动的工具拦截/新增/过滤；policy 文件按工具名平铺在 `middleware/mcp/cloudbase/`（auth、cronTask、uploadFiles、publishMiniprogram、downloadTemplate、getDeployJobStatus 等 13 个）
+- **CloudBase Dashboard 集成**：在 task 详情页内嵌可视化 dashboard（DB 集合 / Storage / SQL / Functions），envId/taskId 通过 Context 强制显式参数化，所有请求自动带 `?envId=` 与 `X-Task-Id`
+- **数据库自定义安全规则**：CollectionPermissions 切到 `DescribeSafeRule` / `ModifySafeRule`，支持 CUSTOM 模式编辑 JSON 安全规则
+- **CloudBase 上传后端签发**：新增 `POST /api/storage/upload-credential`，用永久密钥（优先用户级 / 兜底支撑账号）调 STS 签出临时凭证，避免子账号 GetFederationToken 触发 GrantOtherResource
+- **运维脚本**：`scripts/reset-user-cam-secrets.ts` 清理用户失效的 user-level CAM 密钥
+- **GitHub Action**：`.github/workflows/claude-code.yml`，issue/PR 中 `@claude` 触发 AI agent
+
+### Changed
+
+- **Provision mode 语义重构**：
+  - `shared`：注册不写 user_resources；middleware 直接用 `TCB_SECRET_ID/KEY` + `TCB_ENV_ID`
+  - `isolated`：注册同步预建 user-level env / CAM / AK / Policy；所有 task 共享该 env
+  - `task`：注册不建；每个 task 创建时同步建独立 env + 独立 CAM 子账号 `vibe_t_{taskId}` + 独立 AK + Policy（解决之前所有 task 共用同一 CAM 用户互相轮换密钥的 bug）
+- **`requireUserEnv` 中间件**按 mode 短路解析；新增 taskId hint / envId hint 三级解析路径，capi 路由透传 version、错误响应附 RequestId/Code
+- **统一 SDK / HTTP 两条 MCP runtime 凭证注入**：调用方从传 `getCredentials` 闭包简化为 `userId+envId`，HTTP runtime 增加 `X-Env-Id` header 支持过期自动重注入
+- **Dashboard envId 切换重置**：切环境时立即清空 `activeCollection` / `activeBucket` / `storagePrefix` 与 sidebar 集合列表，避免对新 env 发起旧集合查询
+- **Preview iframe 协议接入**：`usePreviewBridge` hook 封装事件监听 + 指令发送 + RPC；BrowserControls 改用 postMessage 指令替代 contentWindow.history API；新增 HMR 状态指示灯、URL 同步、health check via bridge.ping
+
+### Fixed
+
+- **资源销毁失败保留 DB row**：`destroyProvisionedResources` 返回 `{ steps, failed }`，NotFound 类视为幂等成功；删 task / 删用户时云资源未清完返回 409，DB row 保留可重试（如 env "云存储域名尚在初始化中" 场景）
+- **task 级 CAM 用户独立**：之前所有 task 共用 `vibe_{userId}`，新 task provision 时轮换密钥导致旧 task DB 里存的 AK 全部失效；改用 `vibe_t_{taskId}` 后每个 task 独立子账号
+- **userResources cache key 包含 envId**：原本只按 userId 缓存临时凭证，跨 envId 请求会拿到错 envId 的 token；改成 `userId:envId`
+- **集合权限设置真实接口对接**：之前是 mock，现已切到 `DescribeSafeRule` / `ModifySafeRule`
+- **删用户清理范围扩大**：从 `findByUserId`（仅 user-level）改为 `findAllByUserId`，遍历销毁所有 scope（user + 每个 task）
+- **dashboard 切环境后旧 collection 残留**：DatabasePage / DatabaseMenu / StorageMenu 监听 envId 变化重置内部 state，并加 cancelled 防 fetch 竞态
+- **Provision policy 拆分**：保留 `buildUserEnvPolicyStatements`（CAM 大策略，81 action）；新增 `buildStsInlinePolicyStatements`（STS GetFederationToken 用，规避腾讯云子账号 grant 限制 + 33 action 上限）
+- **Auth.ts ReturnType 嵌套缺层**：`Awaited<ReturnType<...findByUserId>>` 应再套一层 `ReturnType` 解函数返回值，IDE 误报 `camSecretKey` 不存在
+
 ## [3.0.0] — 2026-05-13
 
 ### Added

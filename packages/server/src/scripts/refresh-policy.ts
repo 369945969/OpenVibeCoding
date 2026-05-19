@@ -1,5 +1,5 @@
 import * as tencentcloud from 'tencentcloud-sdk-nodejs'
-import { buildUserEnvPolicyStatements, buildLegacyPolicyStatements, computePolicyHash } from '../cloudbase/provision.js'
+import { buildUserEnvPolicyStatements, computePolicyHash } from '../cloudbase/provision.js'
 import type { PolicyBuildParams } from '../cloudbase/provision.js'
 
 const CamClient = (tencentcloud as any).cam.v20190116.Client
@@ -9,7 +9,6 @@ const OWNER_UIN = process.env.TENCENTCLOUD_ACCOUNT_ID || ''
 const REGION = process.env.TCB_REGION || 'ap-shanghai'
 const COS_TAG_VALUE = process.env.COS_TAG_VALUE || ''
 const POLICY_NAME = `coder_policy_${ENV_ID}`
-const IS_LEGACY = process.argv.includes('--legacy')
 
 async function main() {
   if (!ENV_ID) {
@@ -27,9 +26,8 @@ async function main() {
     process.exit(1)
   }
 
-  if (!IS_LEGACY && (!OWNER_UIN || !COS_TAG_VALUE)) {
-    console.error('TENCENTCLOUD_ACCOUNT_ID and COS_TAG_VALUE env vars are required for precise policy.')
-    console.error('Run with --legacy flag to use the old policy format.')
+  if (!OWNER_UIN || !COS_TAG_VALUE) {
+    console.error('TENCENTCLOUD_ACCOUNT_ID and COS_TAG_VALUE env vars are required.')
     process.exit(1)
   }
 
@@ -56,21 +54,14 @@ async function main() {
   console.log('  --- BEFORE ---')
   console.log('  ' + String(detail.PolicyDocument).replace(/\n/g, '\n  '))
 
-  // Build new policy document
-  let policyStatements: any[]
-  if (IS_LEGACY) {
-    console.log('\n  [LEGACY MODE] Using old policy format')
-    policyStatements = buildLegacyPolicyStatements(ENV_ID)
-  } else {
-    const params: PolicyBuildParams = {
-      envId: ENV_ID,
-      region: REGION,
-      ownerUin: OWNER_UIN,
-      cosTagValue: COS_TAG_VALUE,
-    }
-    console.log(`\n  [PRECISE MODE] region=${REGION}, ownerUin=${OWNER_UIN}, cosTag=${COS_TAG_VALUE}`)
-    policyStatements = buildUserEnvPolicyStatements(params)
+  const params: PolicyBuildParams = {
+    envId: ENV_ID,
+    region: REGION,
+    ownerUin: OWNER_UIN,
+    cosTagValue: COS_TAG_VALUE,
   }
+  console.log(`\n  region=${REGION}, ownerUin=${OWNER_UIN}, cosTag=${COS_TAG_VALUE}`)
+  const policyStatements = buildUserEnvPolicyStatements(params)
 
   const newDoc = JSON.stringify({ version: '2.0', statement: policyStatements }, null, 0)
   const newHash = computePolicyHash(newDoc)

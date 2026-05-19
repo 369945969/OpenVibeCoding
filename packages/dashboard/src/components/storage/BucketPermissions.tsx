@@ -2,11 +2,10 @@ import { Modal, ModalBody, ModalFooter } from '../ui/Modal'
 import { Button } from '../ui'
 import { Shield, Lock, Eye, Users, FileEdit } from 'lucide-react'
 import { useState, useEffect } from 'react'
-import { useAtomValue } from 'jotai'
 import type { BucketInfo } from '../../services/storage'
-import { capiClient } from '../../services/capi'
+import { useCapiClient } from '../../services/capi'
+import { useApiContext } from '../../services/api-context'
 import { toast } from 'sonner'
-import { envIdAtom } from '../../atoms/env'
 
 interface Props {
   open: boolean
@@ -42,7 +41,8 @@ const ACL_OPTIONS = [
 ]
 
 export default function BucketPermissions({ open, onOpenChange, bucket }: Props) {
-  const envId = useAtomValue(envIdAtom)
+  const { envId } = useApiContext()
+  const capiClient = useCapiClient()
   const [acl, setAcl] = useState('PRIVATE')
   const [saving, setSaving] = useState(false)
   const [loading, setLoading] = useState(false)
@@ -57,6 +57,7 @@ export default function BucketPermissions({ open, onOpenChange, bucket }: Props)
       })
       .catch(() => {})
       .finally(() => setLoading(false))
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, bucket])
 
   const handleSave = async () => {

@@ -1,10 +1,10 @@
 import { useState, useEffect } from 'react'
-import { useAtomValue } from 'jotai'
-import { functionsAPI, FunctionInfo } from '../services/functions'
+import { useFunctionsAPI, FunctionInfo } from '../services/functions'
+import { useCapiClient } from '../services/capi'
+import { useApiContext } from '../services/api-context'
 import { Button } from '../components/ui'
 import { RefreshCw, Zap, Trash2, Loader2 } from 'lucide-react'
 import { toast } from 'sonner'
-import { envIdAtom } from '../atoms/env'
 
 function formatSize(bytes: number) {
   if (!bytes) return '-'
@@ -70,8 +70,9 @@ function StatusDot({ status }: { status: string }) {
 }
 
 export default function FunctionsPage() {
-  const envId = useAtomValue(envIdAtom)
-  console.log('[FunctionsPage] envId from atom:', envId)
+  const { envId } = useApiContext()
+  const functionsAPI = useFunctionsAPI()
+  const capiClient = useCapiClient()
   const [functions, setFunctions] = useState<FunctionInfo[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -92,7 +93,8 @@ export default function FunctionsPage() {
 
   useEffect(() => {
     load()
-  }, [])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [functionsAPI])
 
   const handleDelete = async (name: string) => {
     if (!envId) {
@@ -103,24 +105,16 @@ export default function FunctionsPage() {
     setDeleting(name)
     try {
       // 通过 capi 调用 DeleteFunction
-      const apiBase = import.meta.env.VITE_API_BASE || '/api'
-      const r = await fetch(`${apiBase}/capi`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        credentials: 'include',
-        body: JSON.stringify({
-          service: 'scf',
-          version: '20180416',
-          action: 'DeleteFunction',
-          params: {
-            FunctionName: name,
-            Namespace: envId,
-          },
-          region: 'ap-shanghai',
-        }),
+      await capiClient.call({
+        service: 'scf',
+        version: '2018-04-16',
+        action: 'DeleteFunction',
+        params: {
+          FunctionName: name,
+          Namespace: envId,
+        },
+        region: 'ap-shanghai',
       })
-      const data = await r.json()
-      if (!r.ok || data.error) throw new Error(data.error || '删除失败')
       toast.success(`已删除函数 "${name}"`)
       setFunctions((prev) => prev.filter((f) => f.name !== name))
     } catch (e: any) {

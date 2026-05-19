@@ -1,10 +1,9 @@
 import { useEffect, useState } from 'react'
 import { BarChart3, Database, HardDrive, Activity, Zap, Code2, ArrowUpRight, Loader2 } from 'lucide-react'
 import { Link } from 'react-router-dom'
-import { useAtomValue } from 'jotai'
-import { databaseAPI } from '../services/database'
-import { capiClient } from '../services/capi'
-import { envIdAtom } from '../atoms/env'
+import { useDatabaseAPI } from '../services/database'
+import { useCapiClient } from '../services/capi'
+import { useApiContext } from '../services/api-context'
 import type { CloudPage } from '../CloudDashboard'
 
 interface EnvInfo {
@@ -22,7 +21,9 @@ const STATUS_MAP: Record<string, { label: string; color: string }> = {
 }
 
 export default function HomePage({ onNavigate }: { onNavigate?: (page: CloudPage) => void }) {
-  const envId = useAtomValue(envIdAtom)
+  const { envId } = useApiContext()
+  const databaseAPI = useDatabaseAPI()
+  const capiClient = useCapiClient()
   const [collectionCount, setCollectionCount] = useState(0)
   const [envInfo, setEnvInfo] = useState<EnvInfo | null>(null)
   const [envLoading, setEnvLoading] = useState(true)
@@ -32,7 +33,7 @@ export default function HomePage({ onNavigate }: { onNavigate?: (page: CloudPage
       .getCollections()
       .then((c) => setCollectionCount(c.length))
       .catch(() => {})
-  }, [])
+  }, [databaseAPI])
 
   useEffect(() => {
     if (!envId) {
@@ -59,7 +60,7 @@ export default function HomePage({ onNavigate }: { onNavigate?: (page: CloudPage
         setEnvInfo({ envId, alias: '', region: '', status: 'Normal' })
       })
       .finally(() => setEnvLoading(false))
-  }, [envId])
+  }, [envId, capiClient])
 
   const stats = [
     { label: '集合数', value: String(collectionCount), icon: Database, accent: '#3b82f6' },
