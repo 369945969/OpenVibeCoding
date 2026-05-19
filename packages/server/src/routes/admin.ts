@@ -276,15 +276,30 @@ admin.delete('/users/:userId', async (c) => {
     userAgent: c.req.header('user-agent') || null,
   })
 
-  // Clean up cloud resources (CAM user, policy, CloudBase env) before deleting DB records
-  const resource = await db.userResources.findByUserId(userId)
-  if (resource) {
-    await destroyProvisionedResources({
-      camUsername: resource.camUsername,
-      policyId: resource.policyId,
-      envId: resource.envId,
-      cosTagValue: resource.cosTagValue,
-    })
+  // Clean up cloud resources before deleting DB records.
+  // 用户名下所有 user_resources（user-level + 每个 task-level）都要清：
+  //   - CAM 子账号 + AccessKey（每个 task 独立，user-level 也独立）
+  //   - CAM 自定义策略
+  //   - COS Tag
+  //   - CloudBase 环境
+  // 失败 best-effort，不阻塞 DB 删除（避免 row 残留导致下次创建冲突）
+  const resources = await db.userResources.findAllByUserId(userId)
+  for (const resource of resources) {
+    try {
+      await destroyProvisionedResources({
+        camUsername: resource.camUsername,
+        policyId: resource.policyId,
+        envId: resource.envId,
+        cosTagValue: resource.cosTagValue,
+      })
+    } catch (e) {
+      console.warn('[admin.deleteUser] destroy resource failed', { id: resource.id, message: (e as Error).message })
+    }
+    try {
+      await db.userResources.deleteById(resource.id)
+    } catch {
+      // best-effort
+    }
   }
 
   await db.users.deleteById(userId)

@@ -373,6 +373,9 @@ githubAuth.get('/callback', async (c) => {
 
         if (connectedUserId !== storedUserId) {
           // Merge accounts: transfer everything from old user to new user
+          // TODO: user_resources 暂不迁移；如果旧账号在 isolated/task 模式下创建了云资源，
+          // 删旧 user 时这些资源不会被清理（DB row 因 onDelete:cascade 会级联删，但腾讯云资源遗留）。
+          // 当前合并场景罕见，先留 TODO，需要时再加 transferUserResources / destroyUserResources 逻辑。
           await getDb().tasks.updateUserId(connectedUserId, storedUserId!)
           await getDb().connectors.updateUserId(connectedUserId, storedUserId!)
           await getDb().accounts.updateUserId(connectedUserId, storedUserId!)

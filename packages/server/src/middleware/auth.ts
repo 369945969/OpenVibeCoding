@@ -232,19 +232,11 @@ export async function requireUserEnv(c: Context<AppEnv>, next: Next) {
     new URL(c.req.url).searchParams.get('taskId') ??
     c.get('taskIdHint') ??
     null
-  let resource: Awaited<ReturnType<typeof getDb>['userResources']['findByUserId']> | null = null
+  let resource: Awaited<ReturnType<ReturnType<typeof getDb>['userResources']['findByUserId']>> | null = null
   let resolvedFrom: 'task' | 'env' | 'user' = 'user'
   if (taskId) {
     try {
       const taskResource = await getDb().userResources.findByTaskId(taskId)
-      console.log('[requireUserEnv] findByTaskId', {
-        taskId,
-        found: !!taskResource,
-        ownedByUser: taskResource ? taskResource.userId === userId : false,
-        status: taskResource?.status,
-        envId: taskResource?.envId,
-        scope: taskResource?.scope,
-      })
       if (taskResource && taskResource.userId === userId && taskResource.status === 'success' && taskResource.envId) {
         resource = taskResource
         resolvedFrom = 'task'
@@ -268,13 +260,6 @@ export async function requireUserEnv(c: Context<AppEnv>, next: Next) {
       try {
         const all = await getDb().userResources.findAllByUserId(userId)
         const match = all.find((r) => r.envId === envIdHint && r.status === 'success')
-        console.log('[requireUserEnv] findByEnvId', {
-          envIdHint,
-          totalUserResources: all.length,
-          found: !!match,
-          scope: match?.scope,
-          taskId: match?.taskId,
-        })
         if (match) {
           resource = match
           resolvedFrom = 'env'
@@ -299,28 +284,16 @@ export async function requireUserEnv(c: Context<AppEnv>, next: Next) {
 
   // 解析凭证：优先永久密钥，否则签发临时密钥
   let credentials: UserEnv['credentials'] | undefined
-  let credentialSource: 'permanent' | 'temp'
 
   if (resource.camSecretId && resource.camSecretKey) {
     credentials = { secretId: resource.camSecretId, secretKey: resource.camSecretKey }
-    credentialSource = 'permanent'
   } else {
     credentials = await issueTempCredentials(envId, userId)
-    credentialSource = 'temp'
   }
 
   if (!credentials) {
     return c.json({ error: 'Failed to obtain user credentials' }, 500)
   }
-
-  console.log('[requireUserEnv] resolved', {
-    path: c.req.path,
-    resolvedFrom,
-    envId,
-    credentialSource,
-    secretIdPrefix: credentials.secretId.slice(0, 8),
-    hasSessionToken: !!credentials.sessionToken,
-  })
 
   c.set('userEnv', { envId, userId, credentials })
 

@@ -407,6 +407,7 @@ export interface UserResourceRepository {
   findAllByUserId(userId: string): Promise<UserResource[]>
   create(resource: NewUserResource): Promise<UserResource>
   update(id: string, data: Partial<Omit<UserResource, 'id'>>): Promise<UserResource | null>
+  deleteById(id: string): Promise<void>
 }
 
 export interface SettingRepository {

@@ -589,6 +589,10 @@ class DrizzleUserResourceRepository implements UserResourceRepository {
     const [row] = await drizzleDb.select().from(userResources).where(eq(userResources.id, id)).limit(1)
     return (row as UserResource) ?? null
   }
+
+  async deleteById(id: string): Promise<void> {
+    await drizzleDb.delete(userResources).where(eq(userResources.id, id))
+  }
 }
 
 // ─── Setting Repository ─────────────────────────────────────────────────────

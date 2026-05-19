@@ -543,6 +543,12 @@ tasksRouter.delete('/:taskId', requireUserEnv, async (c) => {
           envId: taskResource.envId,
           cosTagValue: taskResource.cosTagValue,
         })
+        // 清掉 user_resources DB row，避免残留
+        try {
+          await getDb().userResources.deleteById(taskResource.id)
+        } catch {
+          // best-effort
+        }
       }
     } catch (e) {
       console.log('[task-delete] Failed to destroy task env resources')

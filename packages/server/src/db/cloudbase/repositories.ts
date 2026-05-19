@@ -768,6 +768,12 @@ class CloudBaseUserResourceRepository implements UserResourceRepository {
     if (!rows || rows.length === 0) return null
     return stripCloudBaseId<UserResource>(rows[0] as Record<string, unknown>)
   }
+
+  async deleteById(id: string): Promise<void> {
+    const _ = getCommand()
+    const collection = await getCollection('user_resources')
+    await collection.where({ id: _.eq(id) }).remove()
+  }
 }
 
 // ─── Setting Repository ─────────────────────────────────────────────────────
