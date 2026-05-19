@@ -598,25 +598,56 @@ export async function rollbackProvisionedResources(result: Partial<ProvisionResu
 }
 
 /**
- * 删除用户时完整清理腾讯云资源（CAM 子用户 + 策略 + Tag + 云开发环境）
- * 尽力清理，单项失败不阻塞其他操作
+ * 删除用户/任务时清理腾讯云资源（CAM 子用户 + 策略 + Tag + 云开发环境）
+ *
+ * 返回每一步的结果。调用方应根据 `failed` 决定是否阻止 DB 删除：
+ *   - failed.length === 0 → 全部清掉（含已不存在的视为幂等成功）→ 可以删 DB row
+ *   - failed.length > 0   → 还有资源没清干净（如 env 仍在初始化）→ 保留 DB row，下次重试
+ *
+ * "已不存在"（NotFound 类错误）视为幂等成功，不计入 failed。
  */
+export interface DestroyStepResult {
+  step: 'tag' | 'policy' | 'cam_user' | 'env'
+  status: 'ok' | 'not_found' | 'failed' | 'skipped'
+  message?: string
+  code?: string
+  requestId?: string
+}
+
 export async function destroyProvisionedResources(resource: {
   camUsername?: string | null
   policyId?: number | null
   envId?: string | null
   cosTagValue?: string | null
-}): Promise<void> {
+}): Promise<{ steps: DestroyStepResult[]; failed: DestroyStepResult[] }> {
   const { camClient, tcbClient, tagClient } = getClients()
+  const steps: DestroyStepResult[] = []
+
+  const isNotFound = (e: any): boolean => {
+    const code: string = e?.code || e?.original?.Code || ''
+    const msg: string = (e?.message || '').toString()
+    return (
+      /NotExist|NotFound|NoSuch|ResourceNotFound|UnauthorizedOperation\.NotExist/i.test(code) ||
+      /not exist|不存在|已删除|user does not exist/i.test(msg)
+    )
+  }
 
   // 删除 Tag
   if (resource.cosTagValue) {
     try {
       await (tagClient as any).DeleteTag({ TagKey: 'vibe-env', TagValue: resource.cosTagValue })
       console.log('[provision] Tag deleted')
-    } catch {
-      // best-effort
+      steps.push({ step: 'tag', status: 'ok' })
+    } catch (e: any) {
+      if (isNotFound(e)) {
+        steps.push({ step: 'tag', status: 'not_found', message: e?.message })
+      } else {
+        console.warn('[provision] Tag delete failed', { message: e?.message, code: e?.code })
+        steps.push({ step: 'tag', status: 'failed', message: e?.message, code: e?.code, requestId: e?.requestId })
+      }
     }
+  } else {
+    steps.push({ step: 'tag', status: 'skipped' })
   }
 
   // 删除 CAM 策略
@@ -624,9 +655,17 @@ export async function destroyProvisionedResources(resource: {
     try {
       await (camClient as any).DeletePolicy({ PolicyId: [resource.policyId] })
       console.log('[provision] CAM policy deleted')
-    } catch {
-      // best-effort
+      steps.push({ step: 'policy', status: 'ok' })
+    } catch (e: any) {
+      if (isNotFound(e)) {
+        steps.push({ step: 'policy', status: 'not_found', message: e?.message })
+      } else {
+        console.warn('[provision] CAM policy delete failed', { message: e?.message, code: e?.code })
+        steps.push({ step: 'policy', status: 'failed', message: e?.message, code: e?.code, requestId: e?.requestId })
+      }
     }
+  } else {
+    steps.push({ step: 'policy', status: 'skipped' })
   }
 
   // 删除 CAM 子账号（级联删除 API 密钥）
@@ -634,20 +673,45 @@ export async function destroyProvisionedResources(resource: {
     try {
       await (camClient as any).DeleteUser({ Name: resource.camUsername, Force: 1 })
       console.log('[provision] CAM user deleted')
-    } catch {
-      // best-effort
+      steps.push({ step: 'cam_user', status: 'ok' })
+    } catch (e: any) {
+      if (isNotFound(e)) {
+        steps.push({ step: 'cam_user', status: 'not_found', message: e?.message })
+      } else {
+        console.warn('[provision] CAM user delete failed', { message: e?.message, code: e?.code })
+        steps.push({ step: 'cam_user', status: 'failed', message: e?.message, code: e?.code, requestId: e?.requestId })
+      }
     }
+  } else {
+    steps.push({ step: 'cam_user', status: 'skipped' })
   }
 
   // 销毁 CloudBase 环境
   if (resource.envId && resource.envId !== process.env.TCB_ENV_ID) {
     // 不删除支撑环境（shared 模式下 envId === TCB_ENV_ID）
+    // BypassCheck=true 跳过资源占用检查；IsForce=true 处理隔离期 env（欠费过期）
+    const destroyParams = { EnvId: resource.envId, BypassCheck: true, IsForce: true }
     try {
-      await (tcbClient as any).DestroyEnv({ EnvId: resource.envId })
-      console.log('[provision] CloudBase env destroyed')
-    } catch (e) {
-      console.log('[provision] CloudBase env destroy error:', e)
-      // best-effort
+      await (tcbClient as any).DestroyEnv(destroyParams)
+      console.log('[provision] CloudBase env destroyed', { envId: resource.envId })
+      steps.push({ step: 'env', status: 'ok' })
+    } catch (e: any) {
+      if (isNotFound(e)) {
+        steps.push({ step: 'env', status: 'not_found', message: e?.message })
+      } else {
+        console.warn('[provision] CloudBase env destroy failed', {
+          envId: resource.envId,
+          message: e?.message,
+          code: e?.code,
+          requestId: e?.requestId,
+        })
+        steps.push({ step: 'env', status: 'failed', message: e?.message, code: e?.code, requestId: e?.requestId })
+      }
     }
+  } else {
+    steps.push({ step: 'env', status: 'skipped' })
   }
+
+  const failed = steps.filter((s) => s.status === 'failed')
+  return { steps, failed }
 }

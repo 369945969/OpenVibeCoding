@@ -278,28 +278,48 @@ admin.delete('/users/:userId', async (c) => {
 
   // Clean up cloud resources before deleting DB records.
   // 用户名下所有 user_resources（user-level + 每个 task-level）都要清：
-  //   - CAM 子账号 + AccessKey（每个 task 独立，user-level 也独立）
+  //   - CAM 子账号 + AccessKey
   //   - CAM 自定义策略
   //   - COS Tag
   //   - CloudBase 环境
-  // 失败 best-effort，不阻塞 DB 删除（避免 row 残留导致下次创建冲突）
+  // 任一资源未清干净 → 保留 user_resources + users，返回错误让 admin 重试。
   const resources = await db.userResources.findAllByUserId(userId)
+  const remaining: { resourceId: string; failed: unknown[] }[] = []
   for (const resource of resources) {
+    let result: Awaited<ReturnType<typeof destroyProvisionedResources>> | null = null
     try {
-      await destroyProvisionedResources({
+      result = await destroyProvisionedResources({
         camUsername: resource.camUsername,
         policyId: resource.policyId,
         envId: resource.envId,
         cosTagValue: resource.cosTagValue,
       })
-    } catch (e) {
-      console.warn('[admin.deleteUser] destroy resource failed', { id: resource.id, message: (e as Error).message })
+    } catch (e: any) {
+      console.warn('[admin.deleteUser] destroy threw', { id: resource.id, message: e?.message })
+      remaining.push({ resourceId: resource.id, failed: [{ message: e?.message }] })
+      continue
     }
+    if (result.failed.length > 0) {
+      console.warn('[admin.deleteUser] partial failure', { id: resource.id, failed: result.failed })
+      remaining.push({ resourceId: resource.id, failed: result.failed })
+      continue
+    }
+    // 全清干净才删 DB row
     try {
       await db.userResources.deleteById(resource.id)
     } catch {
-      // best-effort
+      // best-effort：DB 删不掉但云资源已清，留待孤立扫描脚本
     }
+  }
+
+  if (remaining.length > 0) {
+    return c.json(
+      {
+        error: '部分云资源清理失败，用户保留可重试',
+        remaining,
+      },
+      409,
+    )
   }
 
   await db.users.deleteById(userId)

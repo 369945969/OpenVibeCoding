@@ -523,37 +523,68 @@ tasksRouter.patch('/:taskId', async (c) => {
 })
 
 // Delete task (soft delete + git archive cleanup)
+//
+// 销毁顺序：先清云资源，确认全部清完后才软删 task。云资源未清完（如 env 仍在初始化）
+// 视为本次删除失败，task 保留可见，user_resources 保留可重试。
 tasksRouter.delete('/:taskId', requireUserEnv, async (c) => {
   const session = c.get('session')!
   const { envId } = c.get('userEnv')!
   const { taskId } = c.req.param()
   const existing = await getDb().tasks.findByIdAndUserId(taskId, session.user.id)
   if (!existing || existing.deletedAt) return c.json({ error: 'Task not found' }, 404)
-  await getDb().tasks.softDelete(taskId)
 
-  // Clean up task-scoped CloudBase environment if this task had its own env (provision mode = 'task')
-  ;(async () => {
+  // Step 1: 同步清理 task-scoped 云资源（仅 task 模式下存在）
+  const taskResource = await getDb().userResources.findByTaskId(taskId)
+  if (taskResource && taskResource.scope === 'task') {
+    console.log('[task-delete] destroying task-scoped resources', {
+      resourceId: taskResource.id,
+      envId: taskResource.envId,
+      camUsername: taskResource.camUsername,
+      policyId: taskResource.policyId,
+      cosTagValue: taskResource.cosTagValue,
+    })
+    let result: Awaited<ReturnType<typeof destroyProvisionedResources>>
     try {
-      const taskResource = await getDb().userResources.findByTaskId(taskId)
-      if (taskResource && taskResource.scope === 'task') {
-        console.log('[task-delete] Destroying task-scoped env resources')
-        await destroyProvisionedResources({
-          camUsername: taskResource.camUsername,
-          policyId: taskResource.policyId,
-          envId: taskResource.envId,
-          cosTagValue: taskResource.cosTagValue,
-        })
-        // 清掉 user_resources DB row，避免残留
-        try {
-          await getDb().userResources.deleteById(taskResource.id)
-        } catch {
-          // best-effort
-        }
-      }
-    } catch (e) {
-      console.log('[task-delete] Failed to destroy task env resources')
+      result = await destroyProvisionedResources({
+        camUsername: taskResource.camUsername,
+        policyId: taskResource.policyId,
+        envId: taskResource.envId,
+        cosTagValue: taskResource.cosTagValue,
+      })
+    } catch (e: any) {
+      console.warn('[task-delete] destroyProvisionedResources threw', { message: e?.message })
+      return c.json(
+        {
+          error: '云资源清理失败，请稍后重试',
+          detail: e?.message,
+        },
+        500,
+      )
     }
-  })()
+    if (result.failed.length > 0) {
+      console.warn('[task-delete] some resources failed to destroy, keeping task & user_resources', {
+        failed: result.failed,
+      })
+      return c.json(
+        {
+          error: '部分云资源清理失败，请稍后重试',
+          failed: result.failed,
+        },
+        409,
+      )
+    }
+    // 云资源全清干净，删 user_resources DB row
+    try {
+      await getDb().userResources.deleteById(taskResource.id)
+      console.log('[task-delete] user_resources row removed', { resourceId: taskResource.id })
+    } catch (e: any) {
+      console.warn('[task-delete] failed to delete user_resources row', { message: e?.message })
+      // 云资源已清，但 DB row 删不掉 —— 仍允许 task 软删（避免用户卡住）；下次会被孤立检测脚本清掉
+    }
+  }
+
+  // Step 2: 云资源已清干净（或本来就没有 task-scope 资源），软删 task
+  await getDb().tasks.softDelete(taskId)
 
   // conversationId === taskId (ACP convention)
   // Try to clean up via sandbox (rm -rf workspace dir + git archive sync); fall back to direct API delete
