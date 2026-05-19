@@ -142,15 +142,12 @@ function loadCustomModelsFromTemplate(): ModelInfo[] {
 
 // SDK 系统模型（账号绑定的官方模型列表，不含自定义）
 const SYSTEM_MODELS: ModelInfo[] = [
-  { id: 'glm-5.0', name: 'GLM-5.0' },
-  { id: 'glm-4.7', name: 'GLM-4.7' },
-  { id: 'glm-4.6', name: 'GLM-4.6' },
-  { id: 'glm-4.6v', name: 'GLM-4.6V' },
+  { id: 'glm-5.1', name: 'GLM-5.1' },
+  { id: 'glm-5v-turbo', name: 'GLM-5v-Turbo' },
+  { id: 'kimi-k2.6', name: 'Kimi-K2.6' },
+  { id: 'minimax-m2.7', name: 'MiniMax-M2.7' },
   { id: 'hunyuan-2.0-thinking', name: 'Hunyuan-2.0-Thinking' },
   { id: 'deepseek-v3-2-volc', name: 'DeepSeek-V3.2' },
-  { id: 'minimax-m2.5', name: 'MiniMax-M2.5' },
-  { id: 'kimi-k2.5', name: 'Kimi-K2.5' },
-  { id: 'kimi-k2-thinking', name: 'Kimi-K2-Thinking' },
 ]
 
 // Dynamic model fetch from SDK (reserved for future use)
