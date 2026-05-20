@@ -29,6 +29,7 @@ const DEFAULT_MODEL = 'glm-5.1'
 const OAUTH_TOKEN_ENDPOINT = 'https://copilot.tencent.com/oauth2/token'
 const CONNECT_TIMEOUT_MS = 60_000
 const ITERATION_TIMEOUT_MS = 2 * 60 * 1000
+const DEBUG_JSONL = process.env.AGENT_DEBUG_JSONL === '1' || process.env.AGENT_DEBUG_JSONL === 'true'
 
 /**
  * 把 CodeBuddy SDK 的 result subtype + stream stop_reason 映射成 ACP stopReason。
@@ -691,10 +692,13 @@ export class CloudbaseAgentService {
     // 见下方 "Resume toolConfirmation: 真实执行" 块
     let preSavedUserRecordId: string | null = null
 
-    // DEBUG: ACP SSE event log path (shared with message loop debug dir)
-    const debugAcpLogDir = path.resolve(actualCwd, 'debug-jsonl')
-    mkdirSync(debugAcpLogDir, { recursive: true })
-    const debugAcpLogPath = path.join(debugAcpLogDir, `${conversationId}_acp_${Date.now()}.jsonl`)
+    // DEBUG: ACP SSE event log (enabled via AGENT_DEBUG_JSONL=1)
+    let debugAcpLogPath: string | null = null
+    if (DEBUG_JSONL) {
+      const debugAcpLogDir = path.resolve(actualCwd, 'debug-jsonl')
+      mkdirSync(debugAcpLogDir, { recursive: true })
+      debugAcpLogPath = path.join(debugAcpLogDir, `${conversationId}_acp_${Date.now()}.jsonl`)
+    }
 
     const wrappedCallback: AgentCallback = (msg) => {
       // Enrich message with assistantMessageId
@@ -711,10 +715,12 @@ export class CloudbaseAgentService {
       }
 
       // DEBUG: log raw AgentCallbackMessage and converted ACP event
-      try {
-        appendFileSync(debugAcpLogPath, JSON.stringify({ ts: Date.now(), raw: enrichedMsg, acp: acpEvent }) + '\n')
-      } catch {
-        // ignore
+      if (debugAcpLogPath) {
+        try {
+          appendFileSync(debugAcpLogPath, JSON.stringify({ ts: Date.now(), raw: enrichedMsg, acp: acpEvent }) + '\n')
+        } catch {
+          // ignore
+        }
       }
 
       // 2. Persist deployment records (side-effect, fire-and-forget)
@@ -1470,19 +1476,24 @@ export class CloudbaseAgentService {
       try {
         console.log('[Agent] starting for-await loop...')
 
-        // DEBUG: log all messages from messageLoop to a file
-        const debugMsgLogDir = path.resolve(actualCwd, 'debug-jsonl')
-        mkdirSync(debugMsgLogDir, { recursive: true })
-        const debugMsgLogPath = path.join(debugMsgLogDir, `${conversationId}_messageloop_${Date.now()}.jsonl`)
+        // DEBUG: log all messages from messageLoop to a file (enabled via AGENT_DEBUG_JSONL=1)
+        let debugMsgLogPath: string | null = null
+        if (DEBUG_JSONL) {
+          const debugMsgLogDir = path.resolve(actualCwd, 'debug-jsonl')
+          mkdirSync(debugMsgLogDir, { recursive: true })
+          debugMsgLogPath = path.join(debugMsgLogDir, `${conversationId}_messageloop_${Date.now()}.jsonl`)
+        }
 
         messageLoop: for await (const message of q) {
           console.log('[Agent] message type:', message.type, JSON.stringify(message).slice(0, 300))
 
           // DEBUG: write full message to log file
-          try {
-            appendFileSync(debugMsgLogPath, JSON.stringify({ ts: Date.now(), ...message }) + '\n')
-          } catch {
-            // ignore debug log errors
+          if (debugMsgLogPath) {
+            try {
+              appendFileSync(debugMsgLogPath, JSON.stringify({ ts: Date.now(), ...message }) + '\n')
+            } catch {
+              // ignore debug log errors
+            }
           }
 
           // Tool result (user message) means tool execution completed — resume timeout
@@ -1615,10 +1626,12 @@ export class CloudbaseAgentService {
           let resumeHadContent = false // 追踪本次 resume 是否产出了有意义的内容
           for await (const message of q2) {
             console.log('[Agent] [resume] message type:', message.type, JSON.stringify(message).slice(0, 300))
-            try {
-              appendFileSync(debugMsgLogPath, JSON.stringify({ ts: Date.now(), resumed: true, ...message }) + '\n')
-            } catch {
-              /* ignore */
+            if (debugMsgLogPath) {
+              try {
+                appendFileSync(debugMsgLogPath, JSON.stringify({ ts: Date.now(), resumed: true, ...message }) + '\n')
+              } catch {
+                /* ignore */
+              }
             }
 
             // assistant / stream_event 表示模型产出了内容（非空 resume）
