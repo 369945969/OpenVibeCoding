@@ -107,7 +107,7 @@ flowchart TD
 | `TCB_SECRET_ID` | 是 | 腾讯云 API 密钥 ID |
 | `TCB_SECRET_KEY` | 是 | 腾讯云 API 密钥 Key |
 | `TCB_REGION` | 否 | 默认是 `ap-shanghai` |
-| `TCB_PROVISION_MODE` | 否 | 用户环境模式，支持 `shared` 和 `isolated` |
+| `TCB_PROVISION_MODE` | 否 | 用户环境模式，支持 `shared` / `isolated` / `task`，默认 `shared` |
 
 ### CodeBuddy 认证
 
@@ -130,17 +130,23 @@ flowchart TD
 
 ## 用户环境模式
 
-初始化时需要选择 `TCB_PROVISION_MODE`。
+初始化时需要选择 `TCB_PROVISION_MODE`，也可在 `/admin/settings` 运行时动态切换。
 
 ### `shared`
 - 默认推荐模式
 - 所有用户复用同一个 CloudBase 环境
-- 配置简单，适合作为默认启动方式
+- 配置简单，适合个人使用或快速试用
 
 ### `isolated`
-- 每个用户单独分配环境
+- 每个用户单独分配独立 CloudBase 环境 + CAM 子账号
 - 对账号余额、权限和环境创建能力有更高要求
-- 适合需要更强隔离性的场景
+- 适合多用户 SaaS 部署
+
+### `task`
+- 每个任务创建独立 CloudBase 环境 + 独立 CAM 子账号（`vibe_t_{taskId}`）
+- 任务间完全隔离，互不影响密钥
+- 适合高安全隔离需求场景
+- 配合环境池（`env_pool_enabled=true`）可将获取延迟降至毫秒级
 
 服务端会在请求进入需要环境能力的路由时，通过 `requireUserEnv()` 检查用户是否已经具备 `envId`。如果没有，会返回 `User environment not ready`。
 
