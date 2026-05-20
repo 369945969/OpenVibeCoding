@@ -632,67 +632,18 @@ export async function destroyProvisionedResources(resource: {
     )
   }
 
-  // 删除 Tag
-  if (resource.cosTagValue) {
-    try {
-      await (tagClient as any).DeleteTag({ TagKey: 'vibe-env', TagValue: resource.cosTagValue })
-      console.log('[provision] Tag deleted')
-      steps.push({ step: 'tag', status: 'ok' })
-    } catch (e: any) {
-      if (isNotFound(e)) {
-        steps.push({ step: 'tag', status: 'not_found', message: e?.message })
-      } else {
-        console.warn('[provision] Tag delete failed', { message: e?.message, code: e?.code })
-        steps.push({ step: 'tag', status: 'failed', message: e?.message, code: e?.code, requestId: e?.requestId })
-      }
-    }
-  } else {
-    steps.push({ step: 'tag', status: 'skipped' })
-  }
+  // 销毁顺序：先 env（释放底层 cos/scf/flexdb 资源）→ 再 cam_user / policy → 最后 tag
+  // 原因：tag 上挂着 cos bucket 等资源，必须等 env 销毁后 cos bucket 释放，DeleteTag 才不会
+  // 报 TagAttachedResource。env 销毁是异步的，所以单次调用里 tag 通常仍会失败 —— 此时降级
+  // 为 not_found（视为残留，不阻塞外层 DB 删除），等下次定期清理 / orphan 扫描时收尾。
 
-  // 删除 CAM 策略
-  if (resource.policyId) {
-    try {
-      await (camClient as any).DeletePolicy({ PolicyId: [resource.policyId] })
-      console.log('[provision] CAM policy deleted')
-      steps.push({ step: 'policy', status: 'ok' })
-    } catch (e: any) {
-      if (isNotFound(e)) {
-        steps.push({ step: 'policy', status: 'not_found', message: e?.message })
-      } else {
-        console.warn('[provision] CAM policy delete failed', { message: e?.message, code: e?.code })
-        steps.push({ step: 'policy', status: 'failed', message: e?.message, code: e?.code, requestId: e?.requestId })
-      }
-    }
-  } else {
-    steps.push({ step: 'policy', status: 'skipped' })
-  }
-
-  // 删除 CAM 子账号（级联删除 API 密钥）
-  if (resource.camUsername) {
-    try {
-      await (camClient as any).DeleteUser({ Name: resource.camUsername, Force: 1 })
-      console.log('[provision] CAM user deleted')
-      steps.push({ step: 'cam_user', status: 'ok' })
-    } catch (e: any) {
-      if (isNotFound(e)) {
-        steps.push({ step: 'cam_user', status: 'not_found', message: e?.message })
-      } else {
-        console.warn('[provision] CAM user delete failed', { message: e?.message, code: e?.code })
-        steps.push({ step: 'cam_user', status: 'failed', message: e?.message, code: e?.code, requestId: e?.requestId })
-      }
-    }
-  } else {
-    steps.push({ step: 'cam_user', status: 'skipped' })
-  }
-
-  // 销毁 CloudBase 环境
+  // 1) 销毁 CloudBase 环境
   if (resource.envId && resource.envId !== process.env.TCB_ENV_ID) {
-    // 不删除支撑环境（shared 模式下 envId === TCB_ENV_ID）
     // BypassCheck=true 跳过资源占用检查；IsForce=true 处理隔离期 env（欠费过期）
-    const destroyParams = { EnvId: resource.envId, BypassCheck: true, IsForce: true }
+    const destroyParams = { EnvId: resource.envId, BypassCheck: true }
     try {
       await (tcbClient as any).DestroyEnv(destroyParams)
+      await (tcbClient as any).DestroyEnv({ ...destroyParams, IsForce: true })
       console.log('[provision] CloudBase env destroyed', { envId: resource.envId })
       steps.push({ step: 'env', status: 'ok' })
     } catch (e: any) {
@@ -710,6 +661,70 @@ export async function destroyProvisionedResources(resource: {
     }
   } else {
     steps.push({ step: 'env', status: 'skipped' })
+  }
+
+  // 2) 删除 CAM 子账号（级联删除 API 密钥）
+  if (resource.camUsername) {
+    try {
+      await (camClient as any).DeleteUser({ Name: resource.camUsername, Force: 1 })
+      console.log('[provision] CAM user deleted')
+      steps.push({ step: 'cam_user', status: 'ok' })
+    } catch (e: any) {
+      if (isNotFound(e)) {
+        steps.push({ step: 'cam_user', status: 'not_found', message: e?.message })
+      } else {
+        console.warn('[provision] CAM user delete failed', { message: e?.message, code: e?.code })
+        steps.push({ step: 'cam_user', status: 'failed', message: e?.message, code: e?.code, requestId: e?.requestId })
+      }
+    }
+  } else {
+    steps.push({ step: 'cam_user', status: 'skipped' })
+  }
+
+  // 3) 删除 CAM 策略
+  if (resource.policyId) {
+    try {
+      await (camClient as any).DeletePolicy({ PolicyId: [resource.policyId] })
+      console.log('[provision] CAM policy deleted')
+      steps.push({ step: 'policy', status: 'ok' })
+    } catch (e: any) {
+      if (isNotFound(e)) {
+        steps.push({ step: 'policy', status: 'not_found', message: e?.message })
+      } else {
+        console.warn('[provision] CAM policy delete failed', { message: e?.message, code: e?.code })
+        steps.push({ step: 'policy', status: 'failed', message: e?.message, code: e?.code, requestId: e?.requestId })
+      }
+    }
+  } else {
+    steps.push({ step: 'policy', status: 'skipped' })
+  }
+
+  // 4) 删除 Tag（注意：env 销毁是异步的，cos bucket 等可能还没解绑，此时 DeleteTag 会报
+  //    FailedOperation.TagAttachedResource。这种情况降级为非阻塞警告，不计入 failed，避免
+  //    阻塞外层 DB 删除——剩下的孤立 tag 无功能影响，由后台/定期扫描清理）
+  if (resource.cosTagValue) {
+    try {
+      await (tagClient as any).DeleteTag({ TagKey: 'vibe-env', TagValue: resource.cosTagValue })
+      console.log('[provision] Tag deleted')
+      steps.push({ step: 'tag', status: 'ok' })
+    } catch (e: any) {
+      const code: string = e?.code || e?.original?.Code || ''
+      if (isNotFound(e)) {
+        steps.push({ step: 'tag', status: 'not_found', message: e?.message })
+      } else if (/TagAttachedResource/i.test(code)) {
+        // Tag 上仍有 cos bucket 等资源在异步释放中，降级为非阻塞警告
+        console.warn('[provision] Tag still attached to resources, skipping (will be cleaned up later)', {
+          cosTagValue: resource.cosTagValue,
+          message: e?.message,
+        })
+        steps.push({ step: 'tag', status: 'not_found', message: `attached: ${e?.message}` })
+      } else {
+        console.warn('[provision] Tag delete failed', { message: e?.message, code: e?.code })
+        steps.push({ step: 'tag', status: 'failed', message: e?.message, code: e?.code, requestId: e?.requestId })
+      }
+    }
+  } else {
+    steps.push({ step: 'tag', status: 'skipped' })
   }
 
   const failed = steps.filter((s) => s.status === 'failed')

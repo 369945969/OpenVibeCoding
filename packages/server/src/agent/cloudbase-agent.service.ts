@@ -852,12 +852,6 @@ export class CloudbaseAgentService {
           }
 
           // Create sandbox MCP client，使用【登录用户凭证】操作 CloudBase 资源
-          console.log('[cloudbase-agent] createSandboxMcpClient', {
-            userId: userContext.userId,
-            envId: userContext.envId,
-            userCredentialsSecretId: userCredentials?.secretId?.slice(0, 8),
-            hasUserSessionToken: !!userCredentials?.sessionToken,
-          })
           sandboxMcpClient = await createSandboxMcpClient({
             sandbox: sandboxInstance,
             userId: userContext.userId,
