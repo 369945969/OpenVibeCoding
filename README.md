@@ -245,13 +245,10 @@ pnpm opencode:setup
 
 该命令会：
 
-1. 从 [models.dev](https://models.dev)（opencode 官方 provider catalog）拉取 118+ provider 列表
-2. 检测 `.opencode/opencode.json` 已有 provider 的凭证状态，提示补齐缺失的 env
-3. 引导选择要新增的 provider（deepseek / moonshot / openai / anthropic / zhipuai / …）
-4. 提示输入对应的 API Key（如 `DEEPSEEK_API_KEY`）
-5. 选择默认模型
-6. 从 catalog 取完整 provider 配置（npm / baseURL / models 等）写入 `.opencode/opencode.json`
-7. 把 API Key 写入 `packages/server/.env`
+1. 调用 腾讯云开发 AI+ 接口 [DescribeAIModels](https://cloud.tencent.com/document/product/876/131318) 拉取模型
+2. 引导并配置腾讯云开发 API Key
+3. 从 catalog 取完整配置写入 `.opencode/opencode.json`（含 npm/baseURL/models 等）
+4. 把 API Key 写入 `packages/server/.env`
 
 ### 生成结果示例
 
@@ -259,23 +256,18 @@ pnpm opencode:setup
 // .opencode/opencode.json（自动生成，字段从 models.dev 获取）
 {
   "$schema": "https://opencode.ai/config.json",
-  "model": "deepseek/deepseek-chat",
+  "model": "cloudbase/deepseek-v4-flash",
   "provider": {
-    "deepseek": {
-      "npm": "@ai-sdk/openai-compatible",
-      "name": "DeepSeek",
+    "cloudbase": {
       "options": {
-        "baseURL": "https://api.deepseek.com",
-        "apiKey": "{env:DEEPSEEK_API_KEY}"
+        "baseURL": "https://envId-xxxxxxx.api.tcloudbasegateway.com/v1/ai/cloudbase",
+        "apiKey": "{env:CLOUDBASE_API_KEY}"
       },
       "models": {
-        "deepseek-chat": {
-          "name": "DeepSeek Chat",
-          "tool_call": true,
-          "limit": { "context": 1000000, "output": 384000 },
-          "modalities": { "input": ["text"], "output": ["text"] }
-        }
-        // ... 其他模型
+        "glm-5": {
+          "name": "glm-5"
+        },
+        // 其他模型
       }
     }
   }
@@ -284,7 +276,7 @@ pnpm opencode:setup
 
 ```bash
 # packages/server/.env 会追加 API Key
-DEEPSEEK_API_KEY=sk-***
+CLOUDBASE_API_KEY=eyJhbGciOiJS.xxxxxxxx
 ```
 
 > **为什么写完整字段而不是空对象？** opencode 子进程启动时也需要这些配置。如果只写 `{}`，

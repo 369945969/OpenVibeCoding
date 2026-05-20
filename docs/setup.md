@@ -271,11 +271,10 @@ pnpm opencode:setup
 
 脚本会自动完成以下操作：
 
-1. 从 [models.dev](https://models.dev) 拉取 provider catalog（118+ 个 provider）
-2. 检测 `.opencode/opencode.json` 中已有 provider 的凭证状态，提示补齐缺失的 env
-3. 引导选择要新增的 provider 并输入 API Key
-4. 从 catalog 取完整配置写入 `.opencode/opencode.json`（含 npm/baseURL/models 等）
-5. 把 API Key 写入 `packages/server/.env`
+1. 调用 腾讯云开发 AI+ 接口 [DescribeAIModels](https://cloud.tencent.com/document/product/876/131318) 拉取模型
+2. 引导并配置腾讯云开发 API Key
+3. 从 catalog 取完整配置写入 `.opencode/opencode.json`（含 npm/baseURL/models 等）
+4. 把 API Key 写入 `packages/server/.env`
 
 配置完成后**必须重启 server**（Node.js 的 `--env-file` 只在启动时加载一次）。
 
