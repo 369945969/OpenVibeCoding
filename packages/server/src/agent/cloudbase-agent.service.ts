@@ -586,11 +586,11 @@ export class CloudbaseAgentService {
     }
 
     // Coding 模式：自动放行所有写工具（agent 需要自由操作数据库和部署）
-    if (isCodingMode && conversationId) {
-      for (const tool of WRITE_TOOLS) {
-        sessionPermissions.allowAlways(conversationId, tool)
-      }
-    }
+    // if (isCodingMode && conversationId) {
+    //   for (const tool of WRITE_TOOLS) {
+    //     sessionPermissions.allowAlways(conversationId, tool)
+    //   }
+    // }
 
     // ── 创建 EventBuffer 用于持久化 ACP 事件 ─────────────────────────
     const eventBuffer = new EventBuffer(conversationId, assistantMessageId, userContext.envId, userContext.userId)
@@ -852,12 +852,6 @@ export class CloudbaseAgentService {
           }
 
           // Create sandbox MCP client，使用【登录用户凭证】操作 CloudBase 资源
-          console.log('[cloudbase-agent] createSandboxMcpClient', {
-            userId: userContext.userId,
-            envId: userContext.envId,
-            userCredentialsSecretId: userCredentials?.secretId?.slice(0, 8),
-            hasUserSessionToken: !!userCredentials?.sessionToken,
-          })
           sandboxMcpClient = await createSandboxMcpClient({
             sandbox: sandboxInstance,
             userId: userContext.userId,
@@ -1458,7 +1452,7 @@ export class CloudbaseAgentService {
           },
           settingSources: ['project'],
           // P2: 移除 EnterPlanMode 的禁用——Plan 模式现改由显式 permissionMode='plan' + ExitPlanMode 工具驱动
-          disallowedTools: ['AskUserQuestion'],
+          // disallowedTools: ['AskUserQuestion'],
         },
       }
 
