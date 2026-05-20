@@ -380,6 +380,12 @@ interface Artifact {
 
 ---
 
+## CloudBase Dashboard
+
+task 详情页内嵌 CloudBase 资源管理 Dashboard，envId/taskId 通过 Context 强制参数化，所有请求自动携带 `?envId=` 与 `X-Task-Id`。
+
+---
+
 ## Admin Module
 
 管理后台提供平台治理能力，仅限 `role=admin` 的用户访问（`requireAdmin` 中间件保护）。
