@@ -18,14 +18,7 @@ import { resolveSandboxConfig, backfillSandboxConfig } from '../lib/sandbox-conf
 import { decrypt } from '../lib/crypto.js'
 import { encryptJWE } from '../lib/session.js'
 import type { AgentCallbackMessage, AgentOptions, CodeBuddyMessage, ExtendedSessionUpdate } from '@coder/shared'
-import {
-  registerAgent,
-  getAgentRun,
-  completeAgent,
-  removeAgent,
-  isAgentRunning,
-  type StopReason,
-} from './agent-registry.js'
+import { registerAgent, getAgentRun, completeAgent, isAgentRunning, type StopReason } from './agent-registry.js'
 import { EventBuffer } from './event-buffer.js'
 import { sessionPermissions, normalizeToolName } from './session-permissions.js'
 import { initRepo, pushToUserGit } from '../sandbox/git-personal'
@@ -1776,7 +1769,7 @@ export class CloudbaseAgentService {
         // ignore cleanup errors
       }
 
-      // Flush remaining events to DB FIRST — this must happen before cleanup,
+      // Flush remaining events to DB FIRST — this must happen before completeAgent,
       // so any in-flight events are persisted for SSE replay on reconnect.
       try {
         await eventBuffer.close()
@@ -1784,9 +1777,37 @@ export class CloudbaseAgentService {
         // Non-critical
       }
 
-      // Cleanup stream events AFTER flushing the buffer and AFTER completeAgent()
-      // is called below, so the poll loop sees isDone=true before events are removed.
-      // (moved down — see cleanup call after completeAgent)
+      // ── 判断是否被用户取消 ──
+      const wasCancelled = getAgentRun(conversationId)?.status === 'cancelled'
+
+      // ═══════════════════════════════════════════════════════════════════════
+      // CRITICAL: Call completeAgent EARLY — right after eventBuffer flush.
+      //
+      // Without this, the finally block spends 5-15s on syncMessages/git etc.
+      // while the registry still shows status='running'. If the user confirms
+      // a tool during this window, chatStream() sees isAgentRunning()=true
+      // and silently drops the confirmation.
+      //
+      // Strategy: complete now with what we know (runtimeError). If syncError
+      // occurs later, upgrade the status to 'error' via a second completeAgent.
+      // ═══════════════════════════════════════════════════════════════════════
+      const earlyStatus: 'completed' | 'error' | 'cancelled' = wasCancelled
+        ? 'cancelled'
+        : runtimeError
+          ? 'error'
+          : 'completed'
+      const earlyStopReason: StopReason | undefined = wasCancelled ? 'cancelled' : runtimeStopReason
+      completeAgent(conversationId, earlyStatus, runtimeError?.message, earlyStopReason)
+      // Cleanup stream events NOW — after completeAgent() so the poll loop sees
+      // isDone=true and drains remaining events before we remove them from DB.
+      // Give poll loop one cycle (500ms) to drain before cleaning.
+      setTimeout(() => {
+        persistenceService.cleanupStreamEvents(conversationId, assistantMessageId).catch(() => {
+          // Non-critical
+        })
+      }, 600)
+
+      // ── Post-run cleanup (SSE can now detect completion) ────────────────
 
       // Archive to git if sandbox was used
       if (sandboxInstance) {
@@ -1812,11 +1833,6 @@ export class CloudbaseAgentService {
         }
       }
 
-      // ── 判断是否被用户取消 ──
-      // handleSessionCancel 已在 registry 中标记 status='cancelled'，
-      // 此处检测并决定 DB 记录的最终状态。
-      const wasCancelled = getAgentRun(conversationId)?.status === 'cancelled'
-
       // 同步消息 + 清理本地文件
       let syncError: Error | undefined
       let finalStatus: 'completed' | 'error' = 'completed'
@@ -1832,7 +1848,6 @@ export class CloudbaseAgentService {
           isResumeFromInterrupt,
           preSavedUserRecordId,
         )
-        // 取消时用 'cancel' 而非 'done'，这样 restoreMessages 能识别并跳过被取消的 turn
         await persistenceService.finalizePendingRecords(assistantMessageId, wasCancelled ? 'cancel' : 'done')
       } catch (err) {
         syncError = err instanceof Error ? err : new Error(String(err))
@@ -1848,13 +1863,11 @@ export class CloudbaseAgentService {
         }
       }
 
-      // message loop 中捕获到的 runtime 错误（非用户 cancel）也算 error 状态
       if (runtimeError && !syncError) {
         finalStatus = 'error'
       }
 
       // Update task status in DB
-      // 被取消的 turn: handleSessionCancel 已写 status='stopped'，不再覆写回 'completed'
       if (!wasCancelled) {
         try {
           await getDb().tasks.update(conversationId, {
@@ -1867,48 +1880,20 @@ export class CloudbaseAgentService {
         }
       }
 
-      // 兜底: 如果 finalizePendingRecords 在上面因网络问题失败,延迟重试一次
-      // 防止 record 状态卡在 pending 导致后续对话被 "already in progress" 拦截
+      // 兜底: finalizePendingRecords 失败时延迟重试
       if (syncError) {
         setTimeout(async () => {
           try {
             await persistenceService.finalizePendingRecords(assistantMessageId, 'error')
             console.log('[Agent] Deferred finalize succeeded for', conversationId)
           } catch {
-            // 彻底放弃——需要人工修复
             console.error('[Agent] Deferred finalize also failed for', conversationId)
           }
         }, 5000)
+
+        // Upgrade the early-completed status to 'error'
+        completeAgent(conversationId, 'error', syncError.message, 'refusal')
       }
-
-      // Update agent registry — 让 routes/acp.ts 终结报文据此选 stopReason
-      // run.error 用 runtimeError.message 优先（用户可见的错误根因），
-      // 没有就退回 syncError.message
-      // run.stopReason 由 runtime 在 message loop 中根据 result.subtype / stream stop_reason /
-      // ExecutionError.subtype 推导（见 mapCodebuddyStopReason / mapExecutionErrorStopReason）
-      const agentRunStatus: 'completed' | 'error' | 'cancelled' = wasCancelled
-        ? 'cancelled'
-        : runtimeError || syncError
-          ? 'error'
-          : 'completed'
-      const agentStopReason: StopReason | undefined = wasCancelled
-        ? 'cancelled'
-        : syncError && !runtimeStopReason
-          ? 'refusal' // sync 层异常按 refusal 上报（ACP 合法值）
-          : runtimeStopReason
-      completeAgent(conversationId, agentRunStatus, runtimeError?.message ?? syncError?.message, agentStopReason)
-
-      // Cleanup stream events NOW — after completeAgent() so the poll loop sees
-      // isDone=true and drains remaining events before we remove them from DB.
-      // Give poll loop one cycle (500ms) to drain before cleaning.
-      setTimeout(() => {
-        persistenceService.cleanupStreamEvents(conversationId, assistantMessageId).catch(() => {
-          // Non-critical
-        })
-      }, 600)
-
-      // Schedule registry cleanup after observers have time to detect completion
-      setTimeout(() => removeAgent(conversationId, assistantMessageId), 30_000)
 
       if (syncError) {
         throw syncError
