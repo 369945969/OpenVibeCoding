@@ -144,7 +144,28 @@ export function TasksListPage() {
       const successCount = results.filter((r) => r.ok).length
       const failCount = results.length - successCount
       if (successCount > 0) toast.success(`Deleted ${successCount} task${successCount > 1 ? 's' : ''}`)
-      if (failCount > 0) toast.error(`Failed to delete ${failCount} task${failCount > 1 ? 's' : ''}`)
+      if (failCount > 0) {
+        // 收集失败 task 的详细原因
+        const failures = await Promise.all(
+          results
+            .filter((r) => !r.ok)
+            .map(async (r) => {
+              try {
+                const data = await r.json()
+                const detail = Array.isArray(data?.failed)
+                  ? data.failed.map((f: any) => `[${f.step}] ${f.message || f.code || 'failed'}`).join('；')
+                  : data?.detail || ''
+                return detail ? `${data.error || ''}：${detail}` : data?.error || 'unknown'
+              } catch {
+                return 'unknown'
+              }
+            }),
+        )
+        const reasonSummary = failures.join(' | ')
+        toast.error(
+          `Failed to delete ${failCount} task${failCount > 1 ? 's' : ''}${reasonSummary ? `：${reasonSummary}` : ''}`,
+        )
+      }
       setSelectedTasks(new Set())
       setShowDeleteDialog(false)
       await refreshTasks()

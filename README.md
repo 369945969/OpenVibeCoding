@@ -132,6 +132,88 @@ pnpm build        # 构建所有包
 pnpm start        # 启动生产服务（端口 3001，同时服务 API 和静态文件）
 ```
 
+## OpenCode 模型配置
+
+项目内置 OpenCode ACP runtime。如果前端需要使用 OpenCode agent，需要先配置至少一个
+provider（model 提供商）。
+
+### 前置：安装 opencode CLI
+
+```bash
+npm i -g opencode-ai
+# 验证
+opencode --version
+```
+
+### 一键配置
+
+```bash
+pnpm opencode:setup
+```
+
+该命令会：
+
+1. 调用 腾讯云开发 AI+ 接口 [DescribeAIModels](https://cloud.tencent.com/document/product/876/131318) 拉取模型
+2. 引导并配置腾讯云开发 API Key
+3. 从 catalog 取完整配置写入 `.opencode/opencode.json`（含 npm/baseURL/models 等）
+4. 把 API Key 写入 `packages/server/.env`
+
+### 生成结果示例
+
+```jsonc
+// .opencode/opencode.json（自动生成，字段从 models.dev 获取）
+{
+  "$schema": "https://opencode.ai/config.json",
+  "model": "cloudbase/deepseek-v4-flash",
+  "provider": {
+    "cloudbase": {
+      "options": {
+        "baseURL": "https://envId-xxxxxxx.api.tcloudbasegateway.com/v1/ai/cloudbase",
+        "apiKey": "{env:CLOUDBASE_API_KEY}"
+      },
+      "models": {
+        "glm-5": {
+          "name": "glm-5"
+        },
+        // 其他模型
+      }
+    }
+  }
+}
+```
+
+```bash
+# packages/server/.env 会追加 API Key
+CLOUDBASE_API_KEY=eyJhbGciOiJS.xxxxxxxx
+```
+
+> **为什么写完整字段而不是空对象？** opencode 子进程启动时也需要这些配置。如果只写 `{}`，
+> 子进程要自己从 models.dev 拉 catalog 才知道 npm / baseURL / models 等信息，一旦拉取失败
+> （网络/超时）就无法正常工作。写入完整字段让配置自包含，不依赖运行时网络请求。
+
+### 高级：自定义 provider / 覆盖字段
+
+如果需要：
+
+- 非 catalog 内置的 provider（如内网 LLM 网关、本地 Ollama）
+- 覆盖 catalog 默认的 `baseURL` / `headers`（如走国内镜像）
+- 用 `whitelist` / `blacklist` 限制要展示的模型
+- 配置 variants（如 Anthropic 的 thinking 预算）
+
+请参考 `.opencode/opencode.example.json` 和 [OpenCode 官方 providers 文档](https://opencode.ai/docs/zh-cn/providers/)
+直接手动编辑 `.opencode/opencode.json`。
+
+> 提示：`opencode.json` 顶部的 `$schema` 字段让 VS Code / Cursor 等编辑器支持字段自动补全
+> 和悬停文档，编辑时按 Ctrl+Space 可查看所有可选字段。
+
+### 重新配置 / 新增 provider
+
+`pnpm opencode:setup` 幂等，可多次运行：
+
+- **已存在的 provider** 不会被覆盖（避免丢失手动调整）
+- **已设置的 env key** 不会被重复询问
+- **缺失 env 的 provider** 会在启动时提示补齐
+
 ## 常用命令
 
 ```bash
@@ -148,6 +230,9 @@ pnpm db:studio    # 打开 Drizzle Studio
 # TCR 镜像仓库
 pnpm setup:tcr
 pnpm setup:tcr --namespace my-app --local-image node:20
+
+# OpenCode
+pnpm opencode:setup   # 配置 OpenCode provider 和模型
 ```
 
 ---

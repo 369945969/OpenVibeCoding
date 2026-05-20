@@ -310,7 +310,11 @@ export function TaskSidebar({ tasks, width = 288 }: TaskSidebarProps) {
         refreshTasks()
       } else {
         const data = await response.json()
-        toast.error(data.error || 'Failed to delete task')
+        // 后端 409 时 failed 数组含每步的 step / message / code / requestId
+        const detail = Array.isArray(data?.failed)
+          ? data.failed.map((f: any) => `[${f.step}] ${f.message || f.code || 'failed'}`).join('；')
+          : data?.detail || ''
+        toast.error(detail ? `${data.error || '删除失败'}：${detail}` : data.error || 'Failed to delete task')
       }
     } catch {
       toast.error('Failed to delete task')
