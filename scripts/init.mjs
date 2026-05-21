@@ -869,6 +869,9 @@ ENCRYPTION_KEY=${crypto.randomBytes(32).toString('hex')}
 # Auth Providers
 NEXT_PUBLIC_AUTH_PROVIDERS=local
 
+# Workspace isolation: each task gets its own SCF sandbox instance
+WORKSPACE_ISOLATION=isolated
+
 # Rate Limiting
 MAX_MESSAGES_PER_DAY=50
 MAX_SANDBOX_DURATION=300
@@ -995,6 +998,7 @@ SCF_SANDBOX_IMAGE_URI=${get('TCR_IMAGE')}
 SCF_SANDBOX_IMAGE_ACCELERATE=${get('SCF_SANDBOX_IMAGE_ACCELERATE', 'false')}
 SCF_SANDBOX_IMAGE_PORT=${get('SCF_SANDBOX_IMAGE_PORT', '9000')}
 SCF_SANDBOX_TEST_URL=${get('SCF_SANDBOX_TEST_URL')}
+WORKSPACE_ISOLATION=${get('WORKSPACE_ISOLATION', 'isolated')}
 
 # ==================== GitHub OAuth (Optional) ====================
 
@@ -1101,6 +1105,23 @@ async function main() {
   logSection('TCR 配置')
   if (!(await setupTcr())) {
     process.exit(1)
+  }
+
+  // Step 9.1: Backfill SCF_SANDBOX_IMAGE_URI into server .env
+  // (TCR step writes TCR_IMAGE to root .env.local AFTER setupServerEnv ran)
+  const rootEnvAfterTcr = loadEnvFile()
+  if (rootEnvAfterTcr['TCR_IMAGE']) {
+    const serverEnvFile = resolve(process.cwd(), 'packages/server/.env')
+    if (existsSync(serverEnvFile)) {
+      let content = readFileSync(serverEnvFile, 'utf-8')
+      if (content.includes('SCF_SANDBOX_IMAGE_URI=')) {
+        content = content.replace(/SCF_SANDBOX_IMAGE_URI=.*/, `SCF_SANDBOX_IMAGE_URI=${rootEnvAfterTcr['TCR_IMAGE']}`)
+      } else {
+        content += `\nSCF_SANDBOX_IMAGE_URI=${rootEnvAfterTcr['TCR_IMAGE']}\n`
+      }
+      writeFileSync(serverEnvFile, content)
+      log(`已回写 SCF_SANDBOX_IMAGE_URI=${rootEnvAfterTcr['TCR_IMAGE']}`, 'success')
+    }
   }
 
   // Step 10: Initialize database

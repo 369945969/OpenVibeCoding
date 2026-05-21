@@ -1212,7 +1212,17 @@ Examples:
     config.repoName = env['TCR_REPO_NAME'] || 'sandbox'
   }
   if (config.tag === 'latest') {
-    config.tag = env['TCR_TAG'] || 'latest'
+    // Default tag: use git short hash if available, else timestamp
+    let defaultTag = env['TCR_TAG'] || ''
+    if (!defaultTag) {
+      try {
+        const gitHash = execSync('git rev-parse --short HEAD', { encoding: 'utf-8', stdio: 'pipe' }).trim()
+        defaultTag = gitHash || `build-${Date.now()}`
+      } catch {
+        defaultTag = `build-${Date.now()}`
+      }
+    }
+    config.tag = defaultTag
   }
 
   // 询问永久密钥（如已填写则直接使用，跳过 cloudbase 临时凭证流程）
