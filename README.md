@@ -6,6 +6,14 @@
 [![pnpm](https://img.shields.io/badge/maintained%20with-pnpm-cc00ff.svg)](https://pnpm.io/)
 [![Node](https://img.shields.io/badge/node-%3E%3D18-brightgreen.svg)](https://nodejs.org/)
 
+**AI 生成过程**
+
+<video src="docs/assets/generate.mp4" controls width="100%"></video>
+
+**应用功能展示**
+
+<video src="docs/assets/preview.mp4" controls width="100%"></video>
+
 ## 延伸阅读
 
 - [Setup 指南](docs/setup.md) — 初始化流程、环境变量、验证清单与排障
@@ -71,6 +79,20 @@
 **Admin：环境池管理**
 
 ![admin-env-pool](docs/assets/admin-env-pool.png)
+
+## Demo Videos
+
+**AI 生成过程**
+
+https://github.com/user-attachments/assets/generate.mp4
+
+<video src="docs/assets/generate.mp4" controls width="100%"></video>
+
+**应用功能展示**
+
+https://github.com/user-attachments/assets/preview.mp4
+
+<video src="docs/assets/preview.mp4" controls width="100%"></video>
 
 ---
 
