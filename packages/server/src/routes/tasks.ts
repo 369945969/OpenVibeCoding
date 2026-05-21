@@ -2462,7 +2462,7 @@ tasksRouter.get('/:taskId/container-probe', requireUserEnv, async (c) => {
     const publicResults: IdResult[] = []
     for (let i = 0; i < N; i++) {
       try {
-        let url = `https://${sandboxEnvId}.service.tcloudbase.com/preview/5173/?cloudbase_session_id=${resolvedSessionId}`
+        let url = `https://${sandboxEnvId}.ap-shanghai.app.tcloudbase.com/preview/5173/?cloudbase_session_id=${resolvedSessionId}`
         if (sandboxConfig.sandboxMode === 'shared') url += `&scope_id=${taskId}`
         if (isCodingMode) url += `&scope_template=coding`
         const r = await fetch(url, { signal: AbortSignal.timeout(8_000) })
@@ -2929,7 +2929,7 @@ tasksRouter.get('/:taskId/preview-url', requireUserEnv, async (c) => {
             }
             // 就绪判断：沙箱侧 viteReady=true 即 vite 已 bind 端口、可接请求。
             // 早期我们还要求对公网 gateway 做 HEAD 二次探测以防跨 container，但
-            // 实测（container-probe）证明 `service.tcloudbase.com/preview/` 与
+            // 实测（container-probe）证明 `.ap-shanghai.app.tcloudbase.com/preview/` 与
             // SCF 直连命中同一个 warm container（sandbox_instance 一致），所以
             // 去掉这次额外探测以减少 QPS 压力（避免 CloudBase 430 限流）。
             if (info.success && info.vitePort) {
@@ -2957,7 +2957,7 @@ tasksRouter.get('/:taskId/preview-url', requireUserEnv, async (c) => {
         previewBase = await scfSandboxManager.ensurePreviewGateway(sandbox!)
       } catch {
         const sandboxEnvId = process.env.TCB_ENV_ID || ''
-        previewBase = `https://${sandboxEnvId}.service.tcloudbase.com/preview`
+        previewBase = `https://${sandboxEnvId}.ap-shanghai.app.tcloudbase.com/preview`
       }
 
       // Build gateway URL with scope query params
@@ -3038,7 +3038,7 @@ tasksRouter.get('/:taskId/preview-errors', requireUserEnv, async (c) => {
 
     // 2) 构造公网 gateway URL（与 iframe 同路径），拉 __dev_errors
     const sandboxEnvId = process.env.TCB_ENV_ID || ''
-    const previewBase = `https://${sandboxEnvId}.service.tcloudbase.com/preview`
+    const previewBase = `https://${sandboxEnvId}.ap-shanghai.app.tcloudbase.com/preview`
     const resolvedSessionId = sandboxConfig.sandboxSessionId
     let devErrorsUrl = `${previewBase}/${vitePort}/__dev_errors?cloudbase_session_id=${resolvedSessionId}`
     if (sandboxConfig.sandboxMode === 'shared') devErrorsUrl += `&scope_id=${taskId}`
