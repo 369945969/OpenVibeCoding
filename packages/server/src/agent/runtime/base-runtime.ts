@@ -343,7 +343,10 @@ export abstract class BaseAgentRuntime implements IAgentRuntime {
   }> {
     const { conversationId, envId, userId, userCredentials, isCodingMode, callback, model } = options
 
-    const sandboxEnabled = !!(process.env.TCB_ENV_ID && (process.env.SANDBOX_IMAGE_URI || process.env.SCF_SANDBOX_IMAGE_URI))
+    const sandboxEnabled = !!(
+      process.env.TCB_ENV_ID &&
+      (process.env.SANDBOX_IMAGE_URI || process.env.SCF_SANDBOX_IMAGE_URI)
+    )
     if (!sandboxEnabled || !envId) {
       return {
         sandbox: null,

@@ -163,7 +163,8 @@ export class ScfSandboxManager {
     memory: 2048,
     timeout: 900,
     sessionTTL: Number(process.env.SANDBOX_SESSION_TTL || process.env.SCF_SANDBOX_SESSION_TTL) || 1800,
-    sessionIdleTimeout: Number(process.env.SANDBOX_SESSION_IDLE_TIMEOUT || process.env.SCF_SANDBOX_SESSION_IDLE_TIMEOUT) || 600,
+    sessionIdleTimeout:
+      Number(process.env.SANDBOX_SESSION_IDLE_TIMEOUT || process.env.SCF_SANDBOX_SESSION_IDLE_TIMEOUT) || 600,
   }
 
   private cachedAccessToken: { token: string; expiry: number } | null = null
@@ -178,7 +179,8 @@ export class ScfSandboxManager {
       imageConfig: {
         ImageType: process.env.SANDBOX_IMAGE_TYPE || process.env.SCF_SANDBOX_IMAGE_TYPE || 'personal',
         ImageUri: process.env.SANDBOX_IMAGE_URI || process.env.SCF_SANDBOX_IMAGE_URI || '',
-        ContainerImageAccelerate: (process.env.SANDBOX_IMAGE_ACCELERATE || process.env.SCF_SANDBOX_IMAGE_ACCELERATE) === 'true',
+        ContainerImageAccelerate:
+          (process.env.SANDBOX_IMAGE_ACCELERATE || process.env.SCF_SANDBOX_IMAGE_ACCELERATE) === 'true',
         ImagePort: parseInt(process.env.SANDBOX_IMAGE_PORT || process.env.SCF_SANDBOX_IMAGE_PORT || '9000', 10),
       },
     }

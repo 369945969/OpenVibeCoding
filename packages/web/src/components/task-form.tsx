@@ -420,7 +420,7 @@ export function TaskForm({
             className="underline hover:no-underline"
           >
             CloudBase
-          </a>
+          </a>{' '}
           的 VibeCoding 全栈应用开发平台
         </p>
       </div>
