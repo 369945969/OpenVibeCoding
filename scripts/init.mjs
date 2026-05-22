@@ -24,7 +24,21 @@ const MIN_NODE_VERSION = 18
 const ENV_FILE = resolve(process.cwd(), '.env.local')
 const CLOUDBASE_AUTH_FILE = resolve(homedir(), '.config/.cloudbase/auth.json')
 
+const IS_WINDOWS = process.platform === 'win32'
+
 // ===================== Helper Functions =====================
+
+/**
+ * 跨平台检测命令是否存在 (which / where)
+ */
+function commandExists(name) {
+  try {
+    execSync(`${IS_WINDOWS ? 'where' : 'which'} ${name}`, { stdio: 'pipe' })
+    return true
+  } catch {
+    return false
+  }
+}
 
 const colors = {
   reset: '\x1b[0m',
@@ -353,12 +367,7 @@ function getCloudbaseCredential() {
 // ===================== Cloudbase CLI Helpers =====================
 
 function isCloudbaseInstalled() {
-  try {
-    execSync('which cloudbase', { stdio: 'pipe' })
-    return true
-  } catch {
-    return false
-  }
+  return commandExists('cloudbase')
 }
 
 async function ensureCloudbaseInstalled() {
@@ -529,9 +538,9 @@ async function setupCloudbaseConfig() {
   let envList = []
   let output
   try {
-    output = execSync('cloudbase env list --json 2>/dev/null', {
+    output = execSync('cloudbase env list --json', {
       encoding: 'utf-8',
-      stdio: 'pipe',
+      stdio: ['pipe', 'pipe', 'ignore'],
     })
     const parsed = JSON.parse(output)
     envList = (parsed.data || []).filter(e => e.status === 'NORMAL')

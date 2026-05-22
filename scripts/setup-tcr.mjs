@@ -39,6 +39,20 @@ const DEFAULT_NAMESPACE_PREFIX = 'cloudbase-vibecoding'
 // docker.io/yhyanghang/cloudbase-workspace:260515-0120e18d
 const GHCR_IMAGE_URL = 'ghcr.io/yhsunshining/cloudbase-workspace:260515-01342a05'
 
+const IS_WINDOWS = process.platform === 'win32'
+
+/**
+ * 跨平台检测命令是否存在 (which / where)
+ */
+function commandExists(name) {
+  try {
+    execSync(`${IS_WINDOWS ? 'where' : 'which'} ${name}`, { stdio: 'pipe' })
+    return true
+  } catch {
+    return false
+  }
+}
+
 // ===================== Helper Functions =====================
 
 function log(message, type = 'info') {
@@ -202,12 +216,7 @@ async function askYesNo(prompt, defaultValue = false) {
  * Check if cloudbase CLI is installed
  */
 function isCloudbaseInstalled() {
-  try {
-    execSync('which cloudbase', { stdio: 'pipe' })
-    return true
-  } catch {
-    return false
-  }
+  return commandExists('cloudbase')
 }
 
 /**
@@ -1016,7 +1025,7 @@ async function selectTcbEnv(config) {
 
   let envList = []
   try {
-    const output = execSync('cloudbase env list --json 2>/dev/null', { encoding: 'utf-8', stdio: 'pipe' })
+    const output = execSync('cloudbase env list --json', { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'ignore'] })
     // Strip non-JSON prefix lines (e.g. spinner lines)
     const jsonStart = output.indexOf('{')
     if (jsonStart !== -1) {

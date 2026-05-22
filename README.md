@@ -114,7 +114,12 @@
 ```bash
 git clone <repository-url>
 cd coding-agent-template
+
+# macOS / Linux / Git Bash / WSL
 ./init.sh
+
+# Windows（cmd / PowerShell，需先确认已装 Node.js >= 18 和 pnpm）
+node scripts/init.mjs
 ```
 
 初始化脚本依次完成：Node.js 检查 → pnpm 安装 → `.env.local` 生成 → Docker 检查 → CloudBase 配置 → 依赖安装 → CodeBuddy 认证 → TCR 配置 → 数据库初始化。
