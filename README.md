@@ -157,31 +157,31 @@ pnpm build        # Build all packages
 pnpm start        # Start prod server (port 3001, serves API and static files)
 ```
 
-## 部署到云托管
+## Deploy to CloudRun
 
-本项目支持一键部署到 CloudBase 云托管（容器服务）。无需本地 Docker —— 脚本会将源码和 Dockerfile 提交到云端构建。
+This project supports one-click deployment to CloudBase CloudRun (container service). No local Docker required — the script uploads source code and Dockerfile to the cloud for building.
 
-**前置条件**
+**Prerequisites**
 
-- 已完成 `./init.sh` 初始化（`TCB_ENV_ID`、`TCB_SECRET_ID`、`TCB_SECRET_KEY` 已配置）
-- 已安装 CloudBase CLI：`npm i -g @cloudbase/cli`
+- Completed `./init.sh` initialization (`TCB_ENV_ID`, `TCB_SECRET_ID`, `TCB_SECRET_KEY` configured)
+- CloudBase CLI installed: `npm i -g @cloudbase/cli`
 
-**一键部署**
+**One-click deploy**
 
 ```bash
 pnpm deploy:cloud
 ```
 
-脚本会自动执行：
-1. 提交源码 + Dockerfile 到云端构建镜像
-2. 部署为云托管容器服务（服务名：`vibecoding-platform`，端口：80）
-3. 查询并输出服务的访问地址
+The script will:
+1. Upload source + Dockerfile to CloudBase for cloud-side image building
+2. Deploy as a CloudRun container service (service name: `vibecoding-platform`, port: 80)
+3. Query and display the service access URL
 
-**部署完成后**
+**After deployment**
 
-- 访问地址格式：`https://{serviceName}-{id}.{region}.run.tcloudbase.com`
-- 构建进度可在 [云开发控制台](https://tcb.cloud.tencent.com) → 云托管 → 服务详情 → 部署记录 中查看
-- 环境变量需在控制台的服务配置中手动设置（或后续版本支持自动注入）
+- Access URL format: `https://{serviceName}-{id}.{region}.run.tcloudbase.com`
+- Build progress can be viewed in [CloudBase Console](https://tcb.cloud.tencent.com) → CloudRun → Service Details → Deploy Records
+- Environment variables should be configured in the console's service settings
 
 ## Common commands
 
