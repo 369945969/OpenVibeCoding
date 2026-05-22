@@ -11,7 +11,7 @@
  */
 
 import { execSync } from 'child_process'
-import { existsSync, readFileSync, writeFileSync, mkdirSync, cpSync, rmSync } from 'fs'
+import { existsSync, readFileSync, writeFileSync } from 'fs'
 import { resolve } from 'path'
 import readline from 'readline'
 
@@ -28,6 +28,9 @@ const DEFAULT_SERVICE_NAME = 'vibecoding-platform'
 const SKIP_ENV_VARS = new Set([
   'PORT', 'NODE_ENV', 'DATABASE_PATH', 'SCF_SANDBOX_TEST_URL',
 ])
+
+// Prefixes reserved by the cloud platform — cannot be used as env var keys
+const RESERVED_PREFIXES = ['SCF_', 'QCLOUD_', 'TENCENTCLOUD_']
 
 // ===================== Helpers =====================
 
@@ -80,13 +83,6 @@ function promptInput(prompt) {
   })
 }
 
-async function askYesNo(prompt, defaultValue = true) {
-  const hint = defaultValue ? '[Y/n]' : '[y/N]'
-  const answer = await promptInput(`${prompt} ${hint}`)
-  if (!answer) return defaultValue
-  return answer.toLowerCase() === 'y' || answer.toLowerCase() === 'yes'
-}
-
 function getGitHash() {
   try {
     return execSync('git rev-parse --short HEAD', { encoding: 'utf-8', stdio: 'pipe' }).trim()
@@ -118,12 +114,18 @@ function collectRuntimeEnvVars() {
   for (const [key, value] of Object.entries(serverEnv)) {
     if (!value) continue
     if (SKIP_ENV_VARS.has(key)) continue
+    // Platform reserved prefixes — rename with CB_ prefix to bypass restriction
+    if (RESERVED_PREFIXES.some((p) => key.startsWith(p))) {
+      filtered[`CB_${key}`] = value
+      continue
+    }
     filtered[key] = value
   }
 
   // Force production settings
   filtered.NODE_ENV = 'production'
-  filtered.PORT = '80'
+  // PORT is set by Dockerfile (80) — do NOT override here so container listens on the
+  // same port that imageConfig.imagePort / CloudRun expects.
 
   return filtered
 }
@@ -133,92 +135,44 @@ function collectRuntimeEnvVars() {
 async function deployCloudRun(env, skipBuild) {
   logSection('部署到云托管（容器服务）')
 
-  const namespace = env.TCR_NAMESPACE
-  const password = env.TCR_PASSWORD
   const envId = env.TCB_ENV_ID
-  const accountId = env.TENCENTCLOUD_ACCOUNT_ID
-
-  if (!namespace || !password) {
-    log('缺少 TCR 配置（TCR_NAMESPACE / TCR_PASSWORD），请先运行 pnpm setup:tcr', 'error')
-    process.exit(1)
-  }
   if (!envId) {
     log('缺少 TCB_ENV_ID，请先运行 ./init.sh', 'error')
     process.exit(1)
   }
 
-  // Check docker
-  if (!commandExists('docker')) {
-    log('Docker 未安装或未运行', 'error')
+  if (!commandExists('cloudbase')) {
+    log('cloudbase CLI 未安装，请先安装：npm i -g @cloudbase/cli', 'error')
     process.exit(1)
   }
 
-  // Step 1: Build
-  if (!skipBuild) {
-    log('构建项目...')
-    run('pnpm build')
-  } else {
-    log('跳过构建（--skip-build）', 'warn')
-  }
-
-  // Step 2: Build docker image
-  const tag = getGitHash()
-  const imageName = `${TCR_DOMAIN}/${namespace}/${DEFAULT_SERVICE_NAME}`
-  const imageTag = `${imageName}:${tag}`
-
-  log(`构建 Docker 镜像 → ${imageTag}`)
-  run(`docker build -t ${imageTag} -t ${imageName}:latest .`)
-
-  // Step 3: Docker login + push
-  log('登录 TCR...')
-  const dockerUser = accountId || '100000000001'
-  try {
-    execSync(
-      `echo "${password}" | docker login ${TCR_DOMAIN} -u ${dockerUser} --password-stdin`,
-      { stdio: 'pipe', cwd: ROOT },
-    )
-  } catch (err) {
-    log('Docker login 失败，请检查 TCR_PASSWORD 和 TENCENTCLOUD_ACCOUNT_ID', 'error')
-    process.exit(1)
-  }
-
-  log('推送镜像...')
-  run(`docker push ${imageTag}`)
-  run(`docker push ${imageName}:latest`)
-
-  // Step 4: Deploy to CloudRun
-  log('部署到云托管...')
-
-  const runtimeEnv = collectRuntimeEnvVars()
-  const envParamsJson = JSON.stringify(runtimeEnv)
-
-  // Update cloudbaserc.json
-  const rcContent = { envId, cloudrun: { name: DEFAULT_SERVICE_NAME } }
+  // Ensure cloudbaserc.json has envId so CLI can read it
+  const rcBackup = existsSync(CLOUDBASERC) ? readFileSync(CLOUDBASERC, 'utf-8') : null
+  const rcContent = { envId }
   writeFileSync(CLOUDBASERC, JSON.stringify(rcContent, null, 2))
 
-  // Try cloudbase CLI deploy
-  if (commandExists('cloudbase')) {
-    try {
-      run(`cloudbase run:deploy ${DEFAULT_SERVICE_NAME} --envId ${envId} --image ${imageTag} --override '{"containerPort":80,"envParams":${JSON.stringify(envParamsJson)}}'`)
-    } catch {
-      log('cloudbase run:deploy 失败，尝试使用 MCP 工具方式...', 'warn')
-      log(`请手动在云开发控制台部署镜像：${imageTag}`, 'info')
-      log(`控制台地址：https://tcb.cloud.tencent.com/dev?envId=${envId}#/run`, 'info')
-    }
-  } else {
-    log('cloudbase CLI 未安装，请手动部署', 'warn')
-    log(`镜像地址：${imageTag}`, 'info')
-    log(`控制台：https://tcb.cloud.tencent.com/dev?envId=${envId}#/run`, 'info')
+  try {
+    // cloudbase cloudrun deploy uploads source + Dockerfile to cloud for building
+    // No local Docker required — cloud builds the image from Dockerfile
+    log('提交到云托管（云端构建）...')
+    run(`cloudbase cloudrun deploy -s ${DEFAULT_SERVICE_NAME} --port 80 --force --source .`)
+  } catch (err) {
+    log('部署失败', 'error')
+    log(`可在控制台手动部署：https://tcb.cloud.tencent.com/dev?envId=${envId}#/run`, 'info')
+    process.exit(1)
+  } finally {
+    if (rcBackup) writeFileSync(CLOUDBASERC, rcBackup)
   }
 
   // Done
   console.log('')
-  log('部署完成！', 'success')
+  log('部署已提交，云端构建中...', 'success')
   console.log('')
-  console.log(`  ${colors.bright}镜像：${colors.reset}${imageTag}`)
   console.log(`  ${colors.bright}服务：${colors.reset}${DEFAULT_SERVICE_NAME}`)
-  console.log(`  ${colors.bright}环境变量：${colors.reset}${Object.keys(runtimeEnv).length} 个已注入`)
-  console.log(`  ${colors.bright}访问地址：${colors.reset}https://${envId}.service.tcloudbase.com`)
+  console.log(`  ${colors.bright}查看构建进度：${colors.reset}`)
+  console.log(`  https://tcb.cloud.tencent.com/dev?envId=${envId}#/platform-run/service/detail?serverName=${DEFAULT_SERVICE_NAME}&tabId=deploy&envId=${envId}`)
+  console.log('')
+  console.log(`  ${colors.bright}部署完成后访问：${colors.reset}https://${envId}.service.tcloudbase.com`)
   console.log('')
 }
 
@@ -246,107 +200,95 @@ async function deployFunction(env, skipBuild) {
     log('跳过构建（--skip-build）', 'warn')
   }
 
-  // Step 2: Prepare deploy directory
-  const deployDir = resolve(ROOT, '.deploy-function')
-  if (existsSync(deployDir)) rmSync(deployDir, { recursive: true })
-  mkdirSync(deployDir, { recursive: true })
+  // Step 2: Build Docker image (same as CloudRun — reuses Dockerfile)
+  // Cloud Function supports image deployment which avoids pnpm/node_modules compatibility issues
+  const namespace = env.TCR_NAMESPACE
+  const password = env.TCR_PASSWORD
+  const accountId = env.TENCENTCLOUD_ACCOUNT_ID
 
-  log('准备部署目录...')
-
-  // Copy built artifacts
-  cpSync(resolve(ROOT, 'packages/server/dist'), resolve(deployDir, 'packages/server/dist'), { recursive: true })
-  cpSync(resolve(ROOT, 'packages/web/dist'), resolve(deployDir, 'packages/web/dist'), { recursive: true })
-  cpSync(resolve(ROOT, 'packages/shared/dist'), resolve(deployDir, 'packages/shared/dist'), { recursive: true })
-
-  // Copy package manifests for production install
-  for (const pkg of ['server', 'shared']) {
-    cpSync(
-      resolve(ROOT, `packages/${pkg}/package.json`),
-      resolve(deployDir, `packages/${pkg}/package.json`),
-    )
-  }
-  cpSync(resolve(ROOT, 'package.json'), resolve(deployDir, 'package.json'))
-  cpSync(resolve(ROOT, 'pnpm-lock.yaml'), resolve(deployDir, 'pnpm-lock.yaml'))
-  cpSync(resolve(ROOT, 'pnpm-workspace.yaml'), resolve(deployDir, 'pnpm-workspace.yaml'))
-  if (existsSync(resolve(ROOT, 'patches'))) {
-    cpSync(resolve(ROOT, 'patches'), resolve(deployDir, 'patches'), { recursive: true })
-  }
-
-  // Stub web/dashboard package.json
-  mkdirSync(resolve(deployDir, 'packages/web'), { recursive: true })
-  mkdirSync(resolve(deployDir, 'packages/dashboard'), { recursive: true })
-  writeFileSync(resolve(deployDir, 'packages/web/package.json'), '{"name":"@coder/web","version":"0.1.0","private":true}')
-  writeFileSync(resolve(deployDir, 'packages/dashboard/package.json'), '{"name":"@coder/dashboard","version":"0.1.0","private":true}')
-
-  // Fix shared package.json exports
-  const sharedPkg = resolve(deployDir, 'packages/shared/package.json')
-  if (existsSync(resolve(ROOT, 'packages/shared/package.json'))) {
-    let content = readFileSync(resolve(ROOT, 'packages/shared/package.json'), 'utf-8')
-    content = content.replace(/\.\/src\/index\.ts/g, './dist/index.js')
-    writeFileSync(sharedPkg, content)
-  }
-
-  // Install production deps
-  log('安装生产依赖...')
-  execSync('corepack enable && pnpm install --prod --no-frozen-lockfile --ignore-scripts', {
-    stdio: 'inherit',
-    cwd: deployDir,
-  })
-
-  // Create symlink for web dist
-  execSync('ln -sf ../../packages/web packages/server/web', { cwd: deployDir })
-
-  // Copy skills
-  if (existsSync(resolve(ROOT, '.agents/skills/cloudbase'))) {
-    cpSync(resolve(ROOT, '.agents/skills/cloudbase'), resolve(deployDir, 'packages/server/skills/cloudbase'), { recursive: true })
-  }
-
-  // Copy opencode config
-  if (existsSync(resolve(ROOT, '.opencode'))) {
-    cpSync(resolve(ROOT, '.opencode'), resolve(deployDir, '.opencode'), { recursive: true })
-  }
-
-  // Create entry point wrapper for cloud function
-  const entryContent = `
-const { createServer } = await import('./packages/server/dist/index.js')
-export { createServer }
-// Default export for web function runtime
-export default async (event, context) => {
-  // CloudBase Web Function will call this
-  return { statusCode: 200, body: 'OK' }
-}
-`
-  writeFileSync(resolve(deployDir, 'index.mjs'), entryContent.trim())
-
-  // Step 3: Deploy
-  log('部署到云函数...')
-
-  const runtimeEnv = collectRuntimeEnvVars()
-
-  try {
-    // Use cloudbase CLI to deploy
-    run(`cloudbase functions:deploy ${DEFAULT_SERVICE_NAME} --envId ${envId} --path ${deployDir}`)
-
-    // Bind HTTP trigger
-    log('绑定 HTTP 触发器...')
-    run(`cloudbase functions:bindHttp ${DEFAULT_SERVICE_NAME} / --envId ${envId}`)
-  } catch (err) {
-    log('部署失败', 'error')
-    log(`部署目录保留在：${deployDir}`, 'info')
-    log(`可手动部署：cloudbase functions:deploy ${DEFAULT_SERVICE_NAME} --envId ${envId} --path ${deployDir}`, 'info')
+  if (!namespace || !password) {
+    log('缺少 TCR 配置（TCR_NAMESPACE / TCR_PASSWORD），请先运行 pnpm setup:tcr', 'error')
     process.exit(1)
   }
 
-  // Cleanup
-  rmSync(deployDir, { recursive: true })
+  if (!commandExists('docker')) {
+    log('Docker 未安装或未运行', 'error')
+    process.exit(1)
+  }
+
+  const tag = getGitHash()
+  const imageName = `${TCR_DOMAIN}/${namespace}/${DEFAULT_SERVICE_NAME}`
+  const imageTag = `${imageName}:${tag}`
+
+  log(`构建 Docker 镜像 → ${imageTag}`)
+  run(`docker build -t ${imageTag} .`)
+
+  // Docker login (if needed) + push
+  log('推送镜像到 TCR...')
+  try {
+    // Try push directly (docker may already be logged in)
+    run(`docker push ${imageTag}`)
+  } catch {
+    // Not logged in — try login then push
+    const dockerUser = accountId || '100000000001'
+    try {
+      execSync(
+        `echo "${password}" | docker login ${TCR_DOMAIN} -u ${dockerUser} --password-stdin`,
+        { stdio: 'pipe', cwd: ROOT },
+      )
+      run(`docker push ${imageTag}`)
+    } catch {
+      log('Docker push 失败，请手动 docker login 后重试', 'error')
+      log(`  docker login ${TCR_DOMAIN}`, 'info')
+      log(`  docker push ${imageTag}`, 'info')
+      process.exit(1)
+    }
+  }
+
+  // Step 3: Deploy as image-based function
+  log('部署到云函数（镜像模式）...')
+
+  const runtimeEnv = collectRuntimeEnvVars()
+
+  // Write cloudbaserc.json for CLI
+  const rcBackup = existsSync(CLOUDBASERC) ? readFileSync(CLOUDBASERC, 'utf-8') : null
+  const fnConfig = {
+    envId,
+    functions: [{
+      name: DEFAULT_SERVICE_NAME,
+      type: 'HTTP',
+      timeout: 900,
+      memorySize: 512,
+      envVariables: runtimeEnv,
+      imageConfig: {
+        imageType: 'personal',
+        imageUri: imageTag,
+        imagePort: 80,
+      },
+    }],
+  }
+  writeFileSync(CLOUDBASERC, JSON.stringify(fnConfig, null, 2))
+
+  try {
+    run(`cloudbase fn deploy ${DEFAULT_SERVICE_NAME} --httpFn --path / --force --deployMode image`)
+  } catch (err) {
+    log('部署失败', 'error')
+    log(`镜像地址：${imageTag}`, 'info')
+    log(`可在控制台手动部署：https://tcb.cloud.tencent.com/dev?envId=${envId}#/function`, 'info')
+    process.exit(1)
+  } finally {
+    if (rcBackup) writeFileSync(CLOUDBASERC, rcBackup)
+  }
 
   // Done
   console.log('')
   log('部署完成！', 'success')
   console.log('')
   console.log(`  ${colors.bright}函数名：${colors.reset}${DEFAULT_SERVICE_NAME}`)
+  console.log(`  ${colors.bright}镜像：${colors.reset}${imageTag}`)
   console.log(`  ${colors.bright}环境变量：${colors.reset}${Object.keys(runtimeEnv).length} 个`)
-  console.log(`  ${colors.bright}访问地址：${colors.reset}https://${envId}.service.tcloudbase.com/${DEFAULT_SERVICE_NAME}`)
+  console.log(`  ${colors.bright}访问地址：${colors.reset}https://${envId}.service.tcloudbase.com/`)
+  console.log(`  ${colors.dim}（HTTP 路径 / 已绑定，如遇冲突请到控制台调整）${colors.reset}`)
   console.log('')
 }
 
