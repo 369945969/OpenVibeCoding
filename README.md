@@ -7,12 +7,11 @@
 [![Node](https://img.shields.io/badge/node-%3E%3D18-brightgreen.svg)](https://nodejs.org/)
 
 **AI 生成过程**
-
-<video src="docs/assets/generate.mp4" controls width="100%"></video>
+<video src="https://github.com/user-attachments/assets/504721f8-bf14-4f16-a8b0-a7d5829c503c" controls width="100%"></video>
 
 **应用功能展示**
 
-<video src="docs/assets/preview.mp4" controls width="100%"></video>
+<video src="https://github.com/user-attachments/assets/750b67cd-551c-4795-bc8c-cfacc0fb23b4" controls width="100%"></video>
 
 ## 延伸阅读
 
@@ -79,20 +78,6 @@
 **Admin：环境池管理**
 
 ![admin-env-pool](docs/assets/admin-env-pool.png)
-
-## Demo Videos
-
-**AI 生成过程**
-
-https://github.com/user-attachments/assets/generate.mp4
-
-<video src="docs/assets/generate.mp4" controls width="100%"></video>
-
-**应用功能展示**
-
-https://github.com/user-attachments/assets/preview.mp4
-
-<video src="docs/assets/preview.mp4" controls width="100%"></video>
 
 ---
 
