@@ -1276,6 +1276,14 @@ Examples:
     console.log('')
     console.log('  ⚠ 如果不授权，云函数将无法拉取镜像，沙箱创建会失败。')
     console.log('')
+
+    // 等待用户确认
+    const authDone = await askYesNo('是否已完成上述两个授权链接的操作？', true)
+    if (!authDone) {
+      console.log('')
+      console.log('  请在启动项目前完成授权，否则沙箱功能将不可用。')
+      console.log('')
+    }
   } else {
     console.log('\n❌ Setup failed. Please check the errors above.\n')
     process.exit(1)
