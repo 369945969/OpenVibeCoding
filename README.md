@@ -157,6 +157,32 @@ pnpm build        # Build all packages
 pnpm start        # Start prod server (port 3001, serves API and static files)
 ```
 
+## 部署到云托管
+
+本项目支持一键部署到 CloudBase 云托管（容器服务）。无需本地 Docker —— 脚本会将源码和 Dockerfile 提交到云端构建。
+
+**前置条件**
+
+- 已完成 `./init.sh` 初始化（`TCB_ENV_ID`、`TCB_SECRET_ID`、`TCB_SECRET_KEY` 已配置）
+- 已安装 CloudBase CLI：`npm i -g @cloudbase/cli`
+
+**一键部署**
+
+```bash
+pnpm deploy:cloud
+```
+
+脚本会自动执行：
+1. 提交源码 + Dockerfile 到云端构建镜像
+2. 部署为云托管容器服务（服务名：`vibecoding-platform`，端口：80）
+3. 查询并输出服务的访问地址
+
+**部署完成后**
+
+- 访问地址格式：`https://{serviceName}-{id}.{region}.run.tcloudbase.com`
+- 构建进度可在 [云开发控制台](https://tcb.cloud.tencent.com) → 云托管 → 服务详情 → 部署记录 中查看
+- 环境变量需在控制台的服务配置中手动设置（或后续版本支持自动注入）
+
 ## Common commands
 
 ```bash

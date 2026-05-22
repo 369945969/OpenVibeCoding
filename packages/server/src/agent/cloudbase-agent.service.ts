@@ -745,7 +745,7 @@ export class CloudbaseAgentService {
     let toolOverrideConfig: { url: string; headers: Record<string, string> } | null = null
     let detectedSandboxCwd: string | undefined
 
-    const sandboxEnabled = process.env.TCB_ENV_ID && process.env.SCF_SANDBOX_IMAGE_URI
+    const sandboxEnabled = process.env.TCB_ENV_ID && (process.env.SANDBOX_IMAGE_URI || process.env.SCF_SANDBOX_IMAGE_URI)
 
     // P4: 代理阶段上报助手 —— 在关键边界向前端透传当前状态
     // 去重:只在 phase 或 toolName 变化时 emit,避免密集的 tool_use stream_event 刷屏

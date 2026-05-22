@@ -125,9 +125,9 @@ flowchart TD
 
 | 变量 | 必需 | 说明 |
 | --- | --- | --- |
-| `SCF_SANDBOX_IMAGE_TYPE` | 否 | 镜像类型，默认 `personal` |
-| `SCF_SANDBOX_IMAGE_URI` | 是 | SCF Sandbox 所使用的镜像 URI |
-| `SCF_SANDBOX_IMAGE_PORT` | 否 | 容器暴露端口，默认 `9000` |
+| `SANDBOX_IMAGE_TYPE` | 否 | 镜像类型，默认 `personal` |
+| `SANDBOX_IMAGE_URI` | 是 | SCF Sandbox 所使用的镜像 URI |
+| `SANDBOX_IMAGE_PORT` | 否 | 容器暴露端口，默认 `9000` |
 | `TCR_IMAGE` | 建议 | `setup-tcr` 成功后会写入，用于 sandbox 镜像配置 |
 
 ## 用户环境模式

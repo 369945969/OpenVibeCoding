@@ -25,9 +25,9 @@ interface ScfSandboxConfig {
   runtime: string
   memory: number
   timeout: number
-  /** SCF Session 最大存活时间（秒）。env: SCF_SANDBOX_SESSION_TTL，默认 1800（30 分钟） */
+  /** SCF Session 最大存活时间（秒）。env: SANDBOX_SESSION_TTL，默认 1800（30 分钟） */
   sessionTTL: number
-  /** SCF Session 空闲超时（秒）。env: SCF_SANDBOX_SESSION_IDLE_TIMEOUT，默认 600（10 分钟） */
+  /** SCF Session 空闲超时（秒）。env: SANDBOX_SESSION_IDLE_TIMEOUT，默认 600（10 分钟） */
   sessionIdleTimeout: number
 }
 
@@ -162,8 +162,8 @@ export class ScfSandboxManager {
     runtime: 'Nodejs16.13',
     memory: 2048,
     timeout: 900,
-    sessionTTL: Number(process.env.SCF_SANDBOX_SESSION_TTL) || 1800,
-    sessionIdleTimeout: Number(process.env.SCF_SANDBOX_SESSION_IDLE_TIMEOUT) || 600,
+    sessionTTL: Number(process.env.SANDBOX_SESSION_TTL || process.env.SCF_SANDBOX_SESSION_TTL) || 1800,
+    sessionIdleTimeout: Number(process.env.SANDBOX_SESSION_IDLE_TIMEOUT || process.env.SCF_SANDBOX_SESSION_IDLE_TIMEOUT) || 600,
   }
 
   private cachedAccessToken: { token: string; expiry: number } | null = null
@@ -174,12 +174,12 @@ export class ScfSandboxManager {
       secretId: process.env.TCB_SECRET_ID || '',
       secretKey: process.env.TCB_SECRET_KEY || '',
       token: process.env.TCB_TOKEN || '',
-      functionPrefix: process.env.SCF_SANDBOX_FUNCTION_PREFIX || 'sandbox',
+      functionPrefix: process.env.SANDBOX_FUNCTION_PREFIX || process.env.SCF_SANDBOX_FUNCTION_PREFIX || 'sandbox',
       imageConfig: {
-        ImageType: process.env.SCF_SANDBOX_IMAGE_TYPE || 'personal',
-        ImageUri: process.env.SCF_SANDBOX_IMAGE_URI || '',
-        ContainerImageAccelerate: process.env.SCF_SANDBOX_IMAGE_ACCELERATE === 'true',
-        ImagePort: parseInt(process.env.SCF_SANDBOX_IMAGE_PORT || '9000', 10),
+        ImageType: process.env.SANDBOX_IMAGE_TYPE || process.env.SCF_SANDBOX_IMAGE_TYPE || 'personal',
+        ImageUri: process.env.SANDBOX_IMAGE_URI || process.env.SCF_SANDBOX_IMAGE_URI || '',
+        ContainerImageAccelerate: (process.env.SANDBOX_IMAGE_ACCELERATE || process.env.SCF_SANDBOX_IMAGE_ACCELERATE) === 'true',
+        ImagePort: parseInt(process.env.SANDBOX_IMAGE_PORT || process.env.SCF_SANDBOX_IMAGE_PORT || '9000', 10),
       },
     }
   }
