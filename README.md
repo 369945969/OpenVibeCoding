@@ -126,8 +126,8 @@ An open-source alternative to [Lovable](https://lovable.dev) / [v0](https://v0.d
 **One-shot init**
 
 ```bash
-git clone <repository-url>
-cd coding-agent-template
+git clone https://github.com/TencentCloudBase/OpenVibeCoding.git
+cd OpenVibeCoding
 
 # macOS / Linux / Git Bash / WSL
 ./init.sh

@@ -126,8 +126,8 @@
 **一键初始化**
 
 ```bash
-git clone <repository-url>
-cd coding-agent-template
+git clone https://github.com/TencentCloudBase/OpenVibeCoding.git
+cd OpenVibeCoding
 
 # macOS / Linux / Git Bash / WSL
 ./init.sh
