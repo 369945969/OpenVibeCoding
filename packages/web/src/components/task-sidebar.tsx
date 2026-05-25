@@ -26,6 +26,7 @@ import { sessionAtom } from '@/lib/atoms/session'
 import { PRStatusIcon } from '@/components/pr-status-icon'
 import { PRCheckStatus } from '@/components/pr-check-status'
 import { githubConnectionAtom } from '@/lib/atoms/github'
+import { useConnectors } from '@/components/connectors-provider'
 
 // Model mappings for human-friendly names
 const AGENT_MODELS = {
@@ -94,6 +95,7 @@ interface GitHubRepoInfo {
 export function TaskSidebar({ tasks, width = 288 }: TaskSidebarProps) {
   const { pathname } = useLocation()
   const { refreshTasks, toggleSidebar } = useTasks()
+  const { clearConnectors } = useConnectors()
   const session = useAtomValue(sessionAtom)
   const githubConnection = useAtomValue(githubConnectionAtom)
   const [isDeleting, setIsDeleting] = useState(false)
@@ -122,6 +124,11 @@ export function TaskSidebar({ tasks, width = 288 }: TaskSidebarProps) {
     if (typeof window !== 'undefined' && window.innerWidth < 1024) {
       toggleSidebar()
     }
+  }
+
+  const handleNewTaskClick = () => {
+    clearConnectors()
+    handleLinkClick()
   }
 
   // Extract task counts per repo from tasks
@@ -427,7 +434,7 @@ export function TaskSidebar({ tasks, width = 288 }: TaskSidebarProps) {
         </div>
         <div className="border-t mb-2" />
         <div className="mb-2">
-          <Link to="/" onClick={handleLinkClick}>
+          <Link to="/" onClick={handleNewTaskClick}>
             <Button variant="outline" size="sm" className="w-full h-8 text-xs">
               <Plus className="h-3.5 w-3.5 mr-2" />
               新建任务
@@ -486,7 +493,7 @@ export function TaskSidebar({ tasks, width = 288 }: TaskSidebarProps) {
 
       {/* New Task Button */}
       <div className="mb-2">
-        <Link to="/" onClick={handleLinkClick}>
+        <Link to="/" onClick={handleNewTaskClick}>
           <Button variant="outline" size="sm" className="w-full h-8 text-xs">
             <Plus className="h-3.5 w-3.5 mr-2" />
             新建任务

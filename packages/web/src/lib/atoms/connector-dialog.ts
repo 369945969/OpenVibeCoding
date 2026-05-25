@@ -5,7 +5,7 @@ export type DialogView = 'list' | 'presets' | 'form'
 
 export type PresetConfig = {
   name: string
-  type: 'local' | 'remote'
+  type: 'HTTP' | 'SSE' | 'STDIO'
   command?: string
   url?: string
   envKeys?: string[]
@@ -16,9 +16,11 @@ export const connectorDialogOpenAtom = atom(false)
 export const connectorDialogViewAtom = atom<DialogView>('list')
 export const editingConnectorAtom = atom<Connector | null>(null)
 export const selectedPresetAtom = atom<PresetConfig | null>(null)
-export const serverTypeAtom = atom<'local' | 'remote'>('remote')
+export const serverTypeAtom = atom<'HTTP' | 'SSE' | 'STDIO'>('HTTP')
 export const envVarsAtom = atom<Array<{ key: string; value: string }>>([])
 export const visibleEnvVarsAtom = atom<Set<number>>(new Set<number>())
+export const customHeadersAtom = atom<Array<{ key: string; value: string }>>([])
+export const visibleCustomHeadersAtom = atom<Set<number>>(new Set<number>())
 
 // Derived atoms
 export const isEditingAtom = atom((get) => !!get(editingConnectorAtom))
@@ -28,9 +30,11 @@ export const resetDialogStateAtom = atom(null, (get, set) => {
   set(connectorDialogViewAtom, 'list')
   set(editingConnectorAtom, null)
   set(selectedPresetAtom, null)
-  set(serverTypeAtom, 'remote')
+  set(serverTypeAtom, 'HTTP')
   set(envVarsAtom, [])
   set(visibleEnvVarsAtom, new Set<number>())
+  set(customHeadersAtom, [])
+  set(visibleCustomHeadersAtom, new Set<number>())
 })
 
 export const setEditingConnectorActionAtom = atom(null, (get, set, connector: Connector) => {
@@ -45,6 +49,16 @@ export const setEditingConnectorActionAtom = atom(null, (get, set, connector: Co
     set(envVarsAtom, [])
   }
   set(visibleEnvVarsAtom, new Set<number>())
+
+  // Set custom headers if they exist
+  if (connector.headers) {
+    const headersArray = Object.entries(connector.headers).map(([key, value]) => ({ key, value: String(value) }))
+    set(customHeadersAtom, headersArray)
+  } else {
+    set(customHeadersAtom, [])
+  }
+  set(visibleCustomHeadersAtom, new Set<number>())
+
   set(selectedPresetAtom, null)
   set(connectorDialogViewAtom, 'form')
 })
@@ -52,9 +66,11 @@ export const setEditingConnectorActionAtom = atom(null, (get, set, connector: Co
 export const startAddingConnectorAtom = atom(null, (get, set) => {
   set(editingConnectorAtom, null)
   set(selectedPresetAtom, null)
-  set(serverTypeAtom, 'remote')
+  set(serverTypeAtom, 'HTTP')
   set(envVarsAtom, [])
   set(visibleEnvVarsAtom, new Set<number>())
+  set(customHeadersAtom, [])
+  set(visibleCustomHeadersAtom, new Set<number>())
   set(connectorDialogViewAtom, 'presets')
 })
 
@@ -71,6 +87,9 @@ export const selectPresetActionAtom = atom(null, (get, set, preset: PresetConfig
   } else {
     set(envVarsAtom, [])
   }
+  set(visibleEnvVarsAtom, new Set<number>())
+  set(customHeadersAtom, [])
+  set(visibleCustomHeadersAtom, new Set<number>())
 
   // Switch to form view
   set(connectorDialogViewAtom, 'form')
@@ -78,9 +97,11 @@ export const selectPresetActionAtom = atom(null, (get, set, preset: PresetConfig
 
 export const addCustomServerAtom = atom(null, (get, set) => {
   set(selectedPresetAtom, null)
-  set(serverTypeAtom, 'remote')
+  set(serverTypeAtom, 'HTTP')
   set(envVarsAtom, [])
   set(visibleEnvVarsAtom, new Set<number>())
+  set(customHeadersAtom, [])
+  set(visibleCustomHeadersAtom, new Set<number>())
   set(connectorDialogViewAtom, 'form')
 })
 
@@ -92,15 +113,19 @@ export const goBackFromFormAtom = atom(null, (get, set) => {
     set(connectorDialogViewAtom, 'list')
     set(editingConnectorAtom, null)
     set(selectedPresetAtom, null)
-    set(serverTypeAtom, 'remote')
+    set(serverTypeAtom, 'HTTP')
     set(envVarsAtom, [])
     set(visibleEnvVarsAtom, new Set<number>())
+    set(customHeadersAtom, [])
+    set(visibleCustomHeadersAtom, new Set<number>())
   } else {
     // Go back to presets view when adding
     set(selectedPresetAtom, null)
-    set(serverTypeAtom, 'remote')
+    set(serverTypeAtom, 'HTTP')
     set(envVarsAtom, [])
     set(visibleEnvVarsAtom, new Set<number>())
+    set(customHeadersAtom, [])
+    set(visibleCustomHeadersAtom, new Set<number>())
     set(connectorDialogViewAtom, 'presets')
   }
 })
@@ -114,13 +139,18 @@ export const onSuccessActionAtom = atom(null, (get, set) => {
   set(connectorDialogViewAtom, 'list')
   set(editingConnectorAtom, null)
   set(selectedPresetAtom, null)
-  set(serverTypeAtom, 'remote')
+  set(serverTypeAtom, 'HTTP')
   set(envVarsAtom, [])
   set(visibleEnvVarsAtom, new Set<number>())
+  set(customHeadersAtom, [])
+  set(visibleCustomHeadersAtom, new Set<number>())
 })
 
 export const clearPresetActionAtom = atom(null, (get, set) => {
   set(selectedPresetAtom, null)
   set(envVarsAtom, [])
-  set(serverTypeAtom, 'remote')
+  set(visibleEnvVarsAtom, new Set<number>())
+  set(customHeadersAtom, [])
+  set(visibleCustomHeadersAtom, new Set<number>())
+  set(serverTypeAtom, 'HTTP')
 })

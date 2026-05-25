@@ -50,6 +50,7 @@ import { archiveToGit } from '../../sandbox/git-archive.js'
 import os from 'node:os'
 import path from 'node:path'
 import fs from 'node:fs'
+import { getDb } from '../../db'
 
 // ─── Config ──────────────────────────────────────────────────────────────
 
@@ -471,6 +472,25 @@ export class OpencodeAcpRuntime extends BaseAgentRuntime {
           ],
         })
       }
+
+      const taskRecord = await getDb().tasks.findById(conversationId)
+      const taskMcpList = JSON.parse(taskRecord?.mcpServerList || '[]') || []
+      for (const mcp of taskMcpList) {
+        if (!mcp.name) continue
+        console.log('taskMcpList:', mcp.name, mcp.type, mcp.baseUrl, mcp.headers)
+        const serverType = mcp.type?.toLowerCase()
+        if (serverType === 'http' || serverType === 'sse') {
+          mcpServers.push({
+            type: serverType,
+            name: mcp.name,
+            url: mcp.baseUrl,
+            headers: mcp.headers
+              ? Object.entries(mcp.headers).map(([name, value]) => ({ name, value: String(value) }))
+              : [],
+          })
+        }
+      }
+
       const newRes = await conn.newSession({
         cwd: sessionWorkingDir,
         mcpServers,
