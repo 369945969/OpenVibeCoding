@@ -18,6 +18,7 @@
   <a href="#quick-start">Quick Start</a> ◆
   <a href="./docs/architecture.md">Architecture</a> ◆
   <a href="./docs/setup.md">Deployment</a> ◆
+  <a href="#join-the-community">Community</a> ◆
   <a href="./README-zh.md">中文</a>
 </p>
 
@@ -458,6 +459,14 @@ CODEBUDDY_USE_CUSTOM_MODELS=true
 - [CloudBase](https://cloudbase.net/) — cloud development infrastructure
 - [CodeBuddy](https://copilot.tencent.com/) — AI Agent
 - [Hono](https://hono.dev/) — lightweight web framework
+
+## Join the community
+
+Scan the QR code to join the community group.
+
+<p align="center">
+  <img src="./docs/assets/qrcode.png" alt="Join the community group" width="240" />
+</p>
 
 ## License
 
