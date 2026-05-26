@@ -471,3 +471,9 @@ Scan the QR code to join the community group.
 ## License
 
 Derived from [coding-agent-template](https://github.com/vercel-labs/coding-agent-template) (Copyright 2025 Vercel, Inc.) under Apache License 2.0. See [LICENSE](./LICENSE) and [NOTICE](./NOTICE).
+
+## Community
+
+<p align="center">
+  <img src="https://qcloudimg.tencent-cloud.cn/raw/35d793cd00b0cab22e290690a5590c74.png" alt="WeCom QR Code" width="200">
+</p>
