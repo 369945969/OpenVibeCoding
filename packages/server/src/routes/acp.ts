@@ -1,5 +1,6 @@
 import { Hono } from 'hono'
 import { streamSSE } from 'hono/streaming'
+import { readFileSync } from 'node:fs'
 import { v4 as uuidv4 } from 'uuid'
 import {
   ACP_PROTOCOL_VERSION,
@@ -8,8 +9,13 @@ import {
   type JsonRpcRequest,
   type JsonRpcResponse,
   type InitializeResult,
+  type SessionNewParams,
   type SessionNewResult,
+  type SessionLoadParams,
+  type SessionLoadResult,
   type SessionPromptParams,
+  type SessionListParams,
+  type SessionListResult,
   type AgentCallback,
   type AgentCallbackMessage,
 } from '@coder/shared'
@@ -326,10 +332,13 @@ acp.post('/acp', async (c) => {
       return handleInitialize(c, id!)
 
     case 'session/new':
-      return handleSessionNew(c, id!, params)
+      return handleSessionNew(c, id!, params as unknown as SessionNewParams)
 
     case 'session/load':
-      return handleSessionLoad(c, id!, params)
+      return handleSessionLoad(c, id!, params as unknown as SessionLoadParams)
+
+    case 'session/list':
+      return handleSessionList(c, id!, params as unknown as SessionListParams)
 
     case 'session/prompt':
       return handleSessionPrompt(c, id!, params as unknown as SessionPromptParams)
@@ -360,6 +369,9 @@ async function handleInitialize(c: any, id: number | string) {
         audio: false,
         embeddedContext: false,
       },
+      sessionCapabilities: {
+        list: true,
+      },
     },
     agentInfo: NEX_AGENT_INFO,
     authMethods: [],
@@ -368,52 +380,280 @@ async function handleInitialize(c: any, id: number | string) {
   return c.json(rpcOk(id, result))
 }
 
-async function handleSessionNew(c: any, id: number | string, params: Record<string, unknown> | undefined) {
-  const conversationId = (params?.conversationId as string) || uuidv4()
+/**
+ * session/new — 创建或复用会话。
+ *
+ * ACP spec: 创建一个新会话并返回 sessionId。本实现把 ACP session 持久化为
+ * 一条轻量 task 记录（仅 ACP 协议层关心的字段；envId/sandboxXxx 等资源相关
+ * 字段一律留空，由 session/prompt 跑时按 provision mode 解析）。
+ *
+ * 行为：
+ * - 已存在（DB 有 task 或 conversation 有消息）→ 复用，忽略 meta（保持幂等）
+ * - 不存在 → 调 tasks.create() 写一条 status='created' 的轻量记录
+ *
+ * meta 白名单字段（详见 SessionNewMeta 类型）：
+ *   title, selectedAgent, selectedModel, selectedRuntime, mode,
+ *   repoUrl, installDependencies, maxDuration, keepAlive, enableBrowser
+ */
+async function handleSessionNew(c: any, id: number | string, params: SessionNewParams | undefined) {
+  const conversationId = params?.conversationId || uuidv4()
   const sessionId = conversationId
 
-  const { envId, userId, credentials: userCredentials } = c.get('userEnv')!
+  const { envId, userId } = c.get('userEnv')!
   if (!envId) {
     return c.json(rpcErr(id, JSON_RPC_ERRORS.INTERNAL, 'CloudBase environment not bound'))
   }
 
   try {
-    // 检查会话是否已存在
-    const exists = await persistenceService.conversationExists(conversationId, userId, envId)
-
-    let hasHistory = false
-    if (exists) {
-      // 检查是否有历史消息
+    // 1. 已存在的 task → 复用（含跨用户访问检查）
+    const existingTask = await getDb().tasks.findById(sessionId)
+    if (existingTask) {
+      if (existingTask.userId !== userId) {
+        return c.json(rpcErr(id, JSON_RPC_ERRORS.INVALID_REQUEST, 'Session belongs to another user'))
+      }
       const messages = await persistenceService.loadDBMessages(conversationId, envId, userId, 1)
-      hasHistory = messages.length > 0
+      const result: SessionNewResult = { sessionId, hasHistory: messages.length > 0 }
+      return c.json(rpcOk(id, result))
     }
 
-    const result: SessionNewResult = { sessionId, hasHistory }
+    // 2. DB 没 task 但 conversation 有消息（极少见的边界：DB 不一致）→ 复用
+    const exists = await persistenceService.conversationExists(conversationId, userId, envId)
+    if (exists) {
+      const messages = await persistenceService.loadDBMessages(conversationId, envId, userId, 1)
+      const result: SessionNewResult = { sessionId, hasHistory: messages.length > 0 }
+      return c.json(rpcOk(id, result))
+    }
+
+    // 3. 全新会话 → 创建轻量 task 记录
+    const meta = params?.meta ?? {}
+    const now = Date.now()
+    const mode = meta.mode === 'coding' ? 'coding' : 'default'
+
+    await getDb().tasks.create({
+      id: sessionId,
+      userId,
+      prompt: '', // 占位；session/prompt 第一条进来时也不回填，prompt 字段在你这个项目主要给 UI 显示用
+      title: meta.title ?? null,
+      repoUrl: meta.repoUrl ?? null,
+      envId: null, // ACP 协议层不分配资源；运行时从 c.get('userEnv').envId 解析
+      selectedAgent: meta.selectedAgent ?? 'claude',
+      selectedModel: meta.selectedModel ?? null,
+      selectedRuntime: meta.selectedRuntime ?? null,
+      mode,
+      installDependencies: meta.installDependencies ?? null,
+      maxDuration: meta.maxDuration ?? null,
+      keepAlive: meta.keepAlive ?? null,
+      enableBrowser: meta.enableBrowser ?? null,
+      status: 'created',
+      progress: null,
+      logs: '[]',
+      error: null,
+      branchName: null,
+      sandboxId: null,
+      sandboxSessionId: null,
+      sandboxCwd: null,
+      sandboxMode: null,
+      agentSessionId: null,
+      sandboxUrl: null,
+      previewUrl: null,
+      prUrl: null,
+      prNumber: null,
+      prStatus: null,
+      prMergeCommitSha: null,
+      mcpServerIds: null,
+      personalGitInfo: null,
+      createdAt: now,
+      updatedAt: now,
+    })
+
+    const result: SessionNewResult = { sessionId, hasHistory: false }
     return c.json(rpcOk(id, result))
   } catch (error) {
+    console.error('[ACP] session/new failed:', error)
     return c.json(rpcErr(id, JSON_RPC_ERRORS.INTERNAL, (error as Error).message))
   }
 }
 
-async function handleSessionLoad(c: any, id: number | string, params: Record<string, unknown> | undefined) {
-  const sessionId = params?.sessionId as string
+async function handleSessionLoad(c: any, id: number | string, params: SessionLoadParams | undefined) {
+  const sessionId = params?.sessionId
 
   if (!sessionId) {
     return c.json(rpcErr(id, JSON_RPC_ERRORS.INVALID_PARAMS, 'sessionId is required'))
   }
 
-  const { envId, userId, credentials: userCredentials } = c.get('userEnv')!
+  const { envId, userId } = c.get('userEnv')!
   if (!envId) {
     return c.json(rpcErr(id, JSON_RPC_ERRORS.INTERNAL, 'CloudBase environment not bound'))
   }
 
-  const exists = await persistenceService.conversationExists(sessionId, userId, envId)
+  const task = await getDb().tasks.findById(sessionId)
+  if (task && task.userId !== userId) {
+    return c.json(rpcErr(id, JSON_RPC_ERRORS.INVALID_REQUEST, 'Session belongs to another user'))
+  }
 
+  const exists = !!task || (await persistenceService.conversationExists(sessionId, userId, envId))
   if (!exists) {
     return c.json(rpcErr(id, JSON_RPC_ERRORS.INVALID_PARAMS, `Session '${sessionId}' not found`))
   }
 
-  return c.json(rpcOk(id, { sessionId }))
+  if (params?.replay) {
+    return replaySessionHistory(c, id, sessionId, envId, userId, params)
+  }
+
+  const result: SessionLoadResult = { sessionId }
+  return c.json(rpcOk(id, result))
+}
+
+async function replaySessionHistory(
+  c: any,
+  id: number | string,
+  sessionId: string,
+  envId: string,
+  userId: string,
+  params: SessionLoadParams,
+) {
+  const limit = Math.min(Math.max(params.limit ?? 50, 1), 100)
+  const cursor = params.cursor ?? '0'
+  const sort = params.sort ?? 'DESC'
+
+  return streamSSE(c, async (stream) => {
+    const { records, nextCursor } = await persistenceService.loadDBMessagesPage(sessionId, envId, userId, {
+      limit,
+      cursor,
+      sort,
+    })
+    const messages = records.map((record) => toHistoryMessage(record, sessionId))
+
+    await stream.writeSSE({
+      data: JSON.stringify({
+        jsonrpc: '2.0',
+        method: 'session/update',
+        params: {
+          sessionId,
+          update: {
+            sessionUpdate: 'history_page',
+            messages,
+            cursor,
+            nextCursor,
+          },
+        },
+      }),
+    })
+
+    const result: SessionLoadResult = { sessionId, nextCursor }
+    await stream.writeSSE({ data: JSON.stringify(rpcOk(id, result)) })
+    await stream.writeSSE({ data: '[DONE]' })
+  })
+}
+
+function toHistoryMessage(record: any, taskId: string) {
+  const parts = (record.parts || [])
+    .map((p: any) => {
+      if (p.contentType === 'text') {
+        const contentBlocks = (p.metadata?.contentBlocks ?? p.contentBlocks) as any[] | undefined
+        if (contentBlocks) {
+          const imageParts: any[] = []
+          for (const b of contentBlocks) {
+            if (b.type === 'image_blob_ref') {
+              try {
+                const data = readFileSync(b.blob_path as string).toString('base64')
+                imageParts.push({ type: 'image' as const, data, mimeType: b.mime as string })
+              } catch {
+                // ignore unreadable local blob refs during history replay
+              }
+            }
+          }
+          if (imageParts.length > 0) return [...imageParts, { type: 'text' as const, text: p.content || '' }]
+        }
+        return { type: 'text' as const, text: p.content || '' }
+      }
+      if (p.contentType === 'reasoning') return { type: 'thinking' as const, text: p.content || '' }
+      if (p.contentType === 'tool_call') {
+        return {
+          type: 'tool_call' as const,
+          toolCallId: p.toolCallId || p.partId,
+          toolName: (p.metadata?.toolCallName as string) || (p.metadata?.toolName as string) || 'tool',
+          input: p.content || p.metadata?.input,
+          status: (p.metadata?.status as string) || undefined,
+          parentToolCallId: (p.metadata?.parentToolCallId as string) || undefined,
+        }
+      }
+      if (p.contentType === 'tool_result') {
+        return {
+          type: 'tool_result' as const,
+          toolCallId: p.toolCallId || p.partId,
+          toolName: (p.metadata?.toolName as string) || undefined,
+          content: p.content || '',
+          isError: p.metadata?.isError as boolean | undefined,
+          status: (p.metadata?.status as string) || undefined,
+          parentToolCallId: (p.metadata?.parentToolCallId as string) || undefined,
+        }
+      }
+      if (p.contentType === 'image') {
+        return {
+          type: 'image' as const,
+          data: p.content || '',
+          mimeType: (p.metadata?.mimeType as string) || 'image/png',
+        }
+      }
+      return { type: 'text' as const, text: p.content || '' }
+    })
+    .flat()
+
+  const textContent = parts
+    .filter((p: any) => p.type === 'text')
+    .map((p: { type: 'text'; text: string }) => p.text)
+    .join('')
+
+  return {
+    id: record.recordId,
+    taskId,
+    role: record.role === 'user' ? ('user' as const) : ('agent' as const),
+    content: textContent,
+    parts,
+    status: record.status,
+    createdAt: record.createTime || Date.now(),
+  }
+}
+
+/**
+ * session/list — 列出当前用户的会话。
+ *
+ * ACP spec: https://agentclientprotocol.com/protocol/session-list
+ *
+ * 实现细节：
+ * - 直接复用 task repository（一个 task ↔ 一个 ACP session）
+ * - 默认按 createdAt desc，limit 20（与项目内 GET /api/tasks 一致）
+ * - 暂不支持 cwd 过滤、不实现真分页（nextCursor 始终为 null）
+ * - params.orderBy 可传 'updatedAt'，但当前后端只按 createdAt desc 排序，被忽略
+ */
+async function handleSessionList(c: any, id: number | string, params: SessionListParams | undefined) {
+  const { userId } = c.get('userEnv')!
+
+  try {
+    const tasks = await getDb().tasks.findByUserId(userId, 20)
+    const sessions = tasks.map((t) => ({
+      sessionId: t.id,
+      title: t.title || t.prompt?.slice(0, 100) || '',
+      updatedAt: t.updatedAt,
+      _meta: {
+        status: t.status,
+        createdAt: t.createdAt,
+      },
+    }))
+
+    // 标记 params 已读，避免 TS unused 警告；future 启用 cursor 时移除
+    void params
+
+    const result: SessionListResult = {
+      sessions,
+      nextCursor: null,
+    }
+    return c.json(rpcOk(id, result))
+  } catch (error) {
+    console.error('[ACP] session/list failed:', error)
+    return c.json(rpcErr(id, JSON_RPC_ERRORS.INTERNAL, (error as Error).message))
+  }
 }
 
 async function handleSessionPrompt(c: any, id: number | string, params: SessionPromptParams) {

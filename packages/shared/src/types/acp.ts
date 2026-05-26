@@ -70,6 +70,51 @@ export interface ArtifactUpdate {
   }
 }
 
+export type HistoryMessagePart =
+  | { type: 'text'; text: string }
+  | { type: 'thinking'; text: string }
+  | { type: 'image'; data: string; mimeType: string }
+  | {
+      type: 'tool_call'
+      toolCallId: string
+      toolName: string
+      input?: unknown
+      status?: string
+      parentToolCallId?: string
+    }
+  | {
+      type: 'tool_result'
+      toolCallId: string
+      toolName?: string
+      content: string
+      isError?: boolean
+      status?: string
+      parentToolCallId?: string
+    }
+
+export interface HistoryMessage {
+  id: string
+  taskId: string
+  role: 'user' | 'agent'
+  content: string
+  parts?: HistoryMessagePart[]
+  status?: string
+  createdAt: number
+}
+
+/**
+ * session/load replay 的历史分页扩展事件。
+ *
+ * ACP 标准建议通过 session/update replay 历史；本项目以一页 messages 的形式承载，
+ * 方便复用现有 TaskChat 渲染模型，并支持 cursor 分页。
+ */
+export interface HistoryPageUpdate {
+  sessionUpdate: 'history_page'
+  messages: HistoryMessage[]
+  cursor?: string | null
+  nextCursor?: string | null
+}
+
 /**
  * Agent 执行阶段上报（P4）。
  *
@@ -114,6 +159,7 @@ export type ExtendedSessionUpdate =
   | AskUserUpdate
   | ToolConfirmUpdate
   | ArtifactUpdate
+  | HistoryPageUpdate
   | AgentPhaseUpdate
 
 // Re-export base types for convenience

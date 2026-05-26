@@ -414,10 +414,26 @@ export class PersistenceService {
     userId: string,
     limit = 20,
   ): Promise<UnifiedMessageRecord[]> {
+    const { records } = await this.loadDBMessagesPage(conversationId, envId, userId, { limit })
+
+    // 保证 QA 成对：从后往前找到第一条 user 消息，丢弃它之前的 assistant
+    const firstUserIdx = records.findIndex((r) => r.role === 'user')
+    return firstUserIdx >= 0 ? records.slice(firstUserIdx) : records
+  }
+
+  async loadDBMessagesPage(
+    conversationId: string,
+    envId: string,
+    userId: string,
+    options: { limit?: number; cursor?: string | null; sort?: 'ASC' | 'DESC' } = {},
+  ): Promise<{ records: UnifiedMessageRecord[]; nextCursor: string | null }> {
     try {
       const collection = await this.getCollection()
       const app = await this.getCloudBaseApp()
       const _ = app.database().command
+      const limit = Math.min(Math.max(options.limit ?? 50, 1), 100)
+      const offset = Math.max(Number.parseInt(options.cursor || '0', 10) || 0, 0)
+      const sort = options.sort || 'DESC'
 
       const { data } = await collection
         .where({
@@ -426,17 +442,17 @@ export class PersistenceService {
           userId: _.eq(userId),
           agentId: _.eq(AGENT_ID),
         })
-        .orderBy('createTime', 'desc')
-        .limit(limit)
+        .orderBy('createTime', sort === 'ASC' ? 'asc' : 'desc')
+        .skip(offset)
+        .limit(limit + 1)
         .get()
 
-      const sorted = (data as any[]).reverse()
+      const rows = data as any[]
+      const hasMore = rows.length > limit
+      const pageRows = rows.slice(0, limit)
+      const sorted = sort === 'DESC' ? pageRows.reverse() : pageRows
 
-      // 保证 QA 成对：从后往前找到第一条 user 消息，丢弃它之前的 assistant
-      const firstUserIdx = sorted.findIndex((r) => r.role === 'user')
-      const valid = firstUserIdx >= 0 ? sorted.slice(firstUserIdx) : sorted
-
-      return valid.map((r) => ({
+      const records = sorted.map((r) => ({
         recordId: r.recordId,
         conversationId: r.conversationId,
         replyTo: r.replyTo,
@@ -449,8 +465,10 @@ export class PersistenceService {
         parts: r.parts || [],
         createTime: r.createTime || Date.now(),
       }))
+
+      return { records, nextCursor: hasMore ? String(offset + limit) : null }
     } catch {
-      return []
+      return { records: [], nextCursor: null }
     }
   }
 

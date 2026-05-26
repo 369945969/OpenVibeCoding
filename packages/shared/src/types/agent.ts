@@ -37,6 +37,13 @@ export interface AgentCapabilities {
     audio: boolean
     embeddedContext: boolean
   }
+  /**
+   * ACP `session/list` 能力（spec: agentCapabilities.sessionCapabilities.list）。
+   * 客户端在调用 session/list 前应检查此字段。
+   */
+  sessionCapabilities?: {
+    list?: boolean
+  }
 }
 
 /**
@@ -124,9 +131,41 @@ export interface InitializeResult {
 
 /**
  * session/new 方法参数
+ *
+ * 兼容 ACP spec 的 `conversationId`（可选）；`meta` 是扩展字段，
+ * 用于在创建会话时附带"会话级配置"（runtime、model、mode 等）。
+ * 服务端只接受白名单字段，未知字段会被忽略。
+ *
+ * 调用方约定：
+ * - 第一次创建：可传 meta 指定配置；服务端会在 DB 写一条轻量 task 记录
+ * - 已存在会话：服务端忽略 meta，幂等复用（要改配置请用别的方法）
  */
 export interface SessionNewParams {
   conversationId?: string
+  meta?: SessionNewMeta
+}
+
+/**
+ * session/new meta 字段：可选的会话级配置。
+ * 全部字段都是可选；server 会用默认值填充。
+ */
+export interface SessionNewMeta {
+  /** 显示标题；不填则为 null，UI 自动从 prompt 截断衍生 */
+  title?: string
+  /** Agent 类型，如 'claude' / 'codex'；默认 'claude' */
+  selectedAgent?: string
+  /** 具体模型，如 'claude-sonnet-4-5'；不填走 server 默认 */
+  selectedModel?: string
+  /** Runtime，如 'opencode-acp'；不填走 AGENT_RUNTIME env 或注册表默认 */
+  selectedRuntime?: string
+  /** 'default' | 'coding'；默认 'default' */
+  mode?: 'default' | 'coding'
+  /** 仓库 URL（如果会话关联代码仓库） */
+  repoUrl?: string
+  installDependencies?: boolean
+  maxDuration?: number
+  keepAlive?: boolean
+  enableBrowser?: boolean
 }
 
 /**
@@ -142,6 +181,16 @@ export interface SessionNewResult {
  */
 export interface SessionLoadParams {
   sessionId: string
+  /**
+   * true 时服务端通过 SSE replay 一页历史消息；false/省略时仅校验并加载会话。
+   */
+  replay?: boolean
+  /** 分页游标；当前实现为 offset 字符串。 */
+  cursor?: string
+  /** 每页条数，默认 50，最大 100。 */
+  limit?: number
+  /** 历史查询排序。DESC 表示取最新一页，返回前会转为正序便于 UI 渲染。 */
+  sort?: 'ASC' | 'DESC'
 }
 
 /**
@@ -149,6 +198,48 @@ export interface SessionLoadParams {
  */
 export interface SessionLoadResult {
   sessionId: string
+  /** replay=true 时 final result 会带下一页游标；非 replay 时为空 */
+  nextCursor?: string | null
+}
+
+/**
+ * session/list 方法参数
+ *
+ * 遵循 ACP spec: https://agentclientprotocol.com/protocol/session-list
+ * 本实现暂不支持 cwd 过滤（项目内 task 无工作目录概念）。
+ */
+export interface SessionListParams {
+  /** 不透明分页游标。当前实现一次性返回全部，cursor 字段保留为占位。 */
+  cursor?: string
+  /** 排序键，默认 'createdAt'。当前后端只按 createdAt desc 排序。 */
+  orderBy?: 'createdAt' | 'updatedAt'
+  /** 工作目录过滤（ACP spec），本实现忽略。 */
+  cwd?: string
+}
+
+/**
+ * session/list 中单条 session 描述。
+ */
+export interface SessionInfo {
+  sessionId: string
+  /** 显示标题；后端 fallback 到 prompt 截断 */
+  title?: string
+  /** spec 字段：最近更新时间戳（毫秒） */
+  updatedAt?: number
+  /** spec 允许的扩展元数据：本实现塞 status */
+  _meta?: {
+    status?: string
+    createdAt?: number
+  }
+}
+
+/**
+ * session/list 方法响应
+ */
+export interface SessionListResult {
+  sessions: SessionInfo[]
+  /** 下一页游标，当前实现始终为 null（一次性返回） */
+  nextCursor?: string | null
 }
 
 /**
