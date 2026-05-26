@@ -1,6 +1,12 @@
 import type { RefObject } from 'react'
 import type { AgentPhaseInfo } from '../../hooks/apply-session-update'
-import type { AskUserQuestionData, DeploymentInfo, MessagePart, TaskMessage, ToolConfirmData } from '../../types/task-chat'
+import type {
+  AskUserQuestionData,
+  DeploymentInfo,
+  MessagePart,
+  TaskMessage,
+  ToolConfirmData,
+} from '../../types/task-chat'
 import { Card } from '../ui/card'
 import { Check, Copy, Loader2, RotateCcw } from 'lucide-react'
 import { Streamdown } from 'streamdown'
@@ -167,7 +173,11 @@ export function ChatTranscript({
                       onClick={() => onCopyMessage(group.userMessage.id, group.userMessage.content)}
                       className="h-3.5 w-3.5 opacity-30 hover:opacity-70 flex items-center justify-center"
                     >
-                      {copiedMessageId === group.userMessage.id ? <Check className="h-3 w-3" /> : <Copy className="h-3 w-3" />}
+                      {copiedMessageId === group.userMessage.id ? (
+                        <Check className="h-3 w-3" />
+                      ) : (
+                        <Copy className="h-3 w-3" />
+                      )}
                     </button>
                   </div>
                 </Card>
@@ -217,7 +227,8 @@ export function ChatTranscript({
                                   (p) => p.type === 'tool_call' && p.toolCallId === part.toolCallId,
                                 )
                                 const toolName =
-                                  part.toolName || (matchingCall?.type === 'tool_call' ? matchingCall.toolName : undefined)
+                                  part.toolName ||
+                                  (matchingCall?.type === 'tool_call' ? matchingCall.toolName : undefined)
                                 if (toolName && HIDDEN_TOOLS.has(toolName)) return null
                               }
 
@@ -244,9 +255,12 @@ export function ChatTranscript({
                               }
 
                               if (part.type === 'thinking' && part.text) {
-                                const hasMoreThinking = agentMessage.parts?.slice(pi + 1).some((p) => p.type === 'thinking')
+                                const hasMoreThinking = agentMessage.parts
+                                  ?.slice(pi + 1)
+                                  .some((p) => p.type === 'thinking')
                                 const isThinking =
-                                  isStreamingResponse && (hasMoreThinking || pi === (agentMessage.parts?.length || 0) - 1)
+                                  isStreamingResponse &&
+                                  (hasMoreThinking || pi === (agentMessage.parts?.length || 0) - 1)
                                 return <ThinkingBlock key={`thinking-${pi}`} text={part.text} isThinking={isThinking} />
                               }
 
@@ -256,7 +270,8 @@ export function ChatTranscript({
                                   (p) => p.type === 'tool_result' && p.toolCallId === part.toolCallId,
                                 )
                                 const resultStatus = resultPart?.type === 'tool_result' ? resultPart.status : undefined
-                                const isPending = !resultPart || resultStatus === 'incomplete' || resultStatus === 'executing'
+                                const isPending =
+                                  !resultPart || resultStatus === 'incomplete' || resultStatus === 'executing'
                                 const resolvedAskData = resolveAskUserQuestion(agentMessage, part, isPending)
 
                                 return (
@@ -333,7 +348,11 @@ export function ChatTranscript({
                             onClick={() => onCopyMessage(agentMessage.id, parseAgentMessage(agentMessage))}
                             className="h-3.5 w-3.5 opacity-30 hover:opacity-70 flex items-center justify-center"
                           >
-                            {copiedMessageId === agentMessage.id ? <Check className="h-3 w-3" /> : <Copy className="h-3 w-3" />}
+                            {copiedMessageId === agentMessage.id ? (
+                              <Check className="h-3 w-3" />
+                            ) : (
+                              <Copy className="h-3 w-3" />
+                            )}
                           </button>
                         )}
                       </div>
@@ -414,7 +433,9 @@ export function ChatTranscript({
                       <Loader2 className="h-3 w-3 animate-spin" />
                       等待响应...
                     </div>
-                    <div className="text-right font-mono opacity-70 mt-1">{formatDuration(lastMessage.createdAt, currentTime)}</div>
+                    <div className="text-right font-mono opacity-70 mt-1">
+                      {formatDuration(lastMessage.createdAt, currentTime)}
+                    </div>
                   </div>
                 </div>
               </div>
@@ -453,7 +474,11 @@ function parseAgentMessage(message: TaskMessage): string {
   return content
 }
 
-function resolveAskUserQuestion(message: TaskMessage, part: Extract<MessagePart, { type: 'tool_call' }>, isPending: boolean) {
+function resolveAskUserQuestion(
+  message: TaskMessage,
+  part: Extract<MessagePart, { type: 'tool_call' }>,
+  isPending: boolean,
+) {
   if (part.toolName !== 'AskUserQuestion' || !isPending || !part.toolCallId) return undefined
   try {
     const args = typeof part.input === 'string' ? JSON.parse(part.input) : part.input
