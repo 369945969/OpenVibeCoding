@@ -3,16 +3,16 @@
  *
  * 极简对话调试器：
  * - 左侧：session 列表（来自 ACP `session/list`）+ 顶部 "+" 按钮（调 ACP `session/new`）
- * - 右侧：选中 session 的 <TaskChat />
+ * - 右侧：选中 session 的 <AcpChat />
  *
  * 不做：登录页、环境管理、文件浏览、PR/部署 —— 这些是 web 主应用的事。
  *
  * 认证：与本仓库的 server 同源，复用 web 已建立的 cookie；未登录或 session
  * 过期时拉列表会拿到 401，UI 提示去 web 登录即可。
  */
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { AcpClient, TaskChat, useChatStream } from '@coder/chat-core'
-import type { SessionInfo, Task } from '@coder/shared'
+import { useCallback, useEffect, useState } from 'react'
+import { AcpChat, AcpClient } from '@coder/chat-core'
+import type { SessionInfo } from '@coder/shared'
 import { Plus, Loader2, AlertTriangle, MessageSquare, RefreshCw } from 'lucide-react'
 import { toast } from 'sonner'
 
@@ -212,68 +212,5 @@ function EmptyState() {
 // ─── 单个会话的对话视图 ──────────────────────────────────────────
 
 function SessionChat({ sessionId, onTaskUpdated }: { sessionId: string; onTaskUpdated: () => void }) {
-  const [task, setTask] = useState<Task | null>(null)
-  const [taskError, setTaskError] = useState<string | null>(null)
-
-  // chatStream 提升到此处，避免 TaskChat remount 丢状态（与 web 的 task-details 一致）
-  const chatStream = useChatStream(sessionId, {})
-
-  // 拉完整 task 详情
-  const refreshTask = useCallback(async () => {
-    setTaskError(null)
-    try {
-      const res = await fetch('/api/tasks/' + sessionId, { credentials: 'include' })
-      if (!res.ok) {
-        throw new Error('HTTP ' + res.status)
-      }
-      const data = (await res.json()) as { task: Task }
-      setTask(data.task)
-    } catch (err) {
-      setTaskError((err as Error).message)
-    }
-  }, [sessionId])
-
-  // sessionId 切换时重新拉
-  const lastFetchedRef = useRef<string | null>(null)
-  useEffect(() => {
-    if (lastFetchedRef.current === sessionId) return
-    lastFetchedRef.current = sessionId
-    setTask(null)
-    refreshTask()
-  }, [sessionId, refreshTask])
-
-  const handleStreamComplete = useCallback(() => {
-    refreshTask()
-    onTaskUpdated()
-  }, [refreshTask, onTaskUpdated])
-
-  if (taskError) {
-    return (
-      <div className="flex-1 flex items-center justify-center p-8 text-center">
-        <div className="max-w-sm space-y-2">
-          <AlertTriangle className="h-8 w-8 text-destructive mx-auto" />
-          <div className="text-sm font-medium">加载会话失败</div>
-          <div className="text-xs text-muted-foreground break-words">{taskError}</div>
-        </div>
-      </div>
-    )
-  }
-
-  if (!task) {
-    return (
-      <div className="flex-1 flex items-center justify-center text-muted-foreground">
-        <Loader2 className="h-5 w-5 animate-spin" />
-      </div>
-    )
-  }
-
-  return (
-    <TaskChat
-      taskId={sessionId}
-      task={task}
-      chatStream={chatStream}
-      historyMode="acp"
-      onStreamComplete={handleStreamComplete}
-    />
-  )
+  return <AcpChat sessionId={sessionId} onStreamComplete={onTaskUpdated} />
 }

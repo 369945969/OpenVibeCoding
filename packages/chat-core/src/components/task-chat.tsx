@@ -44,6 +44,7 @@ import { useAtom } from 'jotai'
 import { taskChatInputAtomFamily } from '../lib/atoms/chat-input'
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from './ui/dropdown-menu'
 import { TaskListPanel } from './chat/task-list-panel'
+import { ChatTranscript } from './chat/chat-transcript'
 
 const HIDDEN_TOOLS = new Set([
   // CodeBuddy SDK task management 工具（由 TaskListPanel 独立展示）
@@ -729,6 +730,42 @@ export function TaskChat({
   // ─── Tab content ───────────────────────────────────────────────────
 
   const renderTabContent = () => {
+    if (activeTab === 'chat') {
+      return (
+        <ChatTranscript
+          messages={messages}
+          taskStatus={task.status}
+          taskLogs={(task.logs || []) as any}
+          readOnly={readOnly}
+          isSending={isSending}
+          isStreamingResponse={isStreamingResponse}
+          agentPhase={agentPhase}
+          toolConfirm={toolConfirm}
+          questionAnswersByTool={questionAnswersByTool}
+          manualInputsByTool={manualInputsByTool}
+          copiedMessageId={copiedMessageId}
+          currentTime={currentTime}
+          scrollContainerRef={scrollContainerRef}
+          messagesEndRef={messagesEndRef}
+          messageRefs={messageRefs}
+          contentRefs={contentRefs}
+          overflowingMessages={overflowingMessages}
+          userMessageHeights={userMessageHeights}
+          deploymentNotifications={deploymentNotifications}
+          onDeploymentNotificationClick={(_, idx) => {
+            setActiveTab('deployments')
+            setDeploymentNotifications((prev) => prev.filter((_, i) => i !== idx))
+          }}
+          onRetryMessage={handleRetryMessage}
+          onCopyMessage={handleCopyMessage}
+          onAnswerSelect={handleAnswerSelect}
+          onManualInput={handleManualInput}
+          onAnswerQuestion={handleAnswerQuestion}
+          onConfirmTool={handleConfirmTool}
+        />
+      )
+    }
+
     if (activeTab === 'deployments') {
       const handleDeleteDeployment = async (deploymentId: string) => {
         try {

@@ -108,7 +108,7 @@ export class AcpClient {
    */
   async request<T = unknown>(method: string, params: unknown, _reconnectAttempt = 0): Promise<T> {
     const body = this.buildRequestBody(method, params)
-    const res = await fetchWithRetry(this.baseUrl, {
+    const res = await fetchWithRetry(withIntentQuery(this.baseUrl, method), {
       method: 'POST',
       credentials: 'include',
       headers: { 'Content-Type': 'application/json', ...(this.taskId ? { 'X-Task-Id': this.taskId } : {}) },
@@ -140,7 +140,7 @@ export class AcpClient {
    */
   async notify(method: string, params: unknown): Promise<void> {
     try {
-      await fetch(this.baseUrl, {
+      await fetch(withIntentQuery(this.baseUrl, method), {
         method: 'POST',
         credentials: 'include',
         headers: { 'Content-Type': 'application/json', ...(this.taskId ? { 'X-Task-Id': this.taskId } : {}) },
@@ -163,7 +163,7 @@ export class AcpClient {
    */
   async *stream(method: 'session/prompt', params: unknown, signal?: AbortSignal): AsyncIterable<ExtendedSessionUpdate> {
     const body = this.buildRequestBody(method, params)
-    const res = await fetch(this.baseUrl, {
+    const res = await fetch(withIntentQuery(this.baseUrl, method), {
       method: 'POST',
       credentials: 'include',
       headers: { 'Content-Type': 'application/json', ...(this.taskId ? { 'X-Task-Id': this.taskId } : {}) },
@@ -207,7 +207,7 @@ export class AcpClient {
    * 契约同 `stream()`：AsyncIterable，正常结束 return，错误 throw。
    */
   async *observe(turnId: string, signal?: AbortSignal): AsyncIterable<ExtendedSessionUpdate> {
-    const url = `${this.observeBaseUrl}/${this.taskId}?turnId=${encodeURIComponent(turnId)}`
+    const url = withIntentQuery(`${this.observeBaseUrl}/${this.taskId}?turnId=${encodeURIComponent(turnId)}`, 'observe')
     const res = await fetch(url, { credentials: 'include', signal })
 
     if (!res.ok || !res.body) {
@@ -244,7 +244,7 @@ export class AcpClient {
       limit: params.limit,
       sort: params.sort,
     })
-    const res = await fetch(this.baseUrl, {
+    const res = await fetch(withIntentQuery(this.baseUrl, 'session/load'), {
       method: 'POST',
       credentials: 'include',
       headers: { 'Content-Type': 'application/json', ...(this.taskId ? { 'X-Task-Id': this.taskId } : {}) },
@@ -319,7 +319,7 @@ export class AcpClient {
       method,
       params,
     }
-    const res = await fetchWithRetry(baseUrl, {
+    const res = await fetchWithRetry(withIntentQuery(baseUrl, method), {
       method: 'POST',
       credentials: 'include',
       headers: { 'Content-Type': 'application/json' },
@@ -385,7 +385,7 @@ export class AcpClient {
    */
   private async postJsonRpc(method: string, params: unknown): Promise<unknown> {
     const body = this.buildRequestBody(method, params)
-    const res = await fetchWithRetry(this.baseUrl, {
+    const res = await fetchWithRetry(withIntentQuery(this.baseUrl, method), {
       method: 'POST',
       credentials: 'include',
       headers: { 'Content-Type': 'application/json' },
@@ -458,6 +458,11 @@ async function* parseSseBody(res: Response, rpcMethod: string): AsyncIterable<Ex
       // ignore
     }
   }
+}
+
+function withIntentQuery(url: string, intent: string): string {
+  const separator = url.includes('?') ? '&' : '?'
+  return `${url}${separator}i=${encodeURIComponent(intent)}`
 }
 
 /**

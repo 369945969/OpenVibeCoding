@@ -13,6 +13,8 @@
 
 // ─── Top-level Component ──────────────────────────────────────────────
 export { TaskChat } from './components/task-chat'
+export { AcpChat } from './components/acp-chat'
+export type { AcpChatProps } from './components/acp-chat'
 
 // ─── Chat Subcomponents (供独立复用) ───────────────────────────────────
 export { ThinkingBlock } from './components/chat/thinking-block'
