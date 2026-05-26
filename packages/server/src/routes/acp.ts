@@ -1,6 +1,5 @@
 import { Hono } from 'hono'
 import { streamSSE } from 'hono/streaming'
-import { readFileSync } from 'node:fs'
 import { v4 as uuidv4 } from 'uuid'
 import {
   ACP_PROTOCOL_VERSION,
@@ -20,6 +19,7 @@ import {
   type AgentCallbackMessage,
 } from '@coder/shared'
 import { CloudbaseAgentService, getSupportedModels } from '../agent/cloudbase-agent.service.js'
+import { loadTaskMessagesPage } from '../agent/message-history.service.js'
 import { persistenceService } from '../agent/persistence.service.js'
 import { getAgentRun, removeAgent, type StopReason } from '../agent/agent-registry.js'
 import { agentRuntimeRegistry } from '../agent/runtime/index.js'
@@ -517,12 +517,14 @@ async function replaySessionHistory(
   const sort = params.sort ?? 'DESC'
 
   return streamSSE(c, async (stream) => {
-    const { records, nextCursor } = await persistenceService.loadDBMessagesPage(sessionId, envId, userId, {
+    const { messages, nextCursor } = await loadTaskMessagesPage({
+      taskId: sessionId,
+      envId,
+      userId,
       limit,
       cursor,
       sort,
     })
-    const messages = records.map((record) => toHistoryMessage(record, sessionId))
 
     await stream.writeSSE({
       data: JSON.stringify({
@@ -544,76 +546,6 @@ async function replaySessionHistory(
     await stream.writeSSE({ data: JSON.stringify(rpcOk(id, result)) })
     await stream.writeSSE({ data: '[DONE]' })
   })
-}
-
-function toHistoryMessage(record: any, taskId: string) {
-  const parts = (record.parts || [])
-    .map((p: any) => {
-      if (p.contentType === 'text') {
-        const contentBlocks = (p.metadata?.contentBlocks ?? p.contentBlocks) as any[] | undefined
-        if (contentBlocks) {
-          const imageParts: any[] = []
-          for (const b of contentBlocks) {
-            if (b.type === 'image_blob_ref') {
-              try {
-                const data = readFileSync(b.blob_path as string).toString('base64')
-                imageParts.push({ type: 'image' as const, data, mimeType: b.mime as string })
-              } catch {
-                // ignore unreadable local blob refs during history replay
-              }
-            }
-          }
-          if (imageParts.length > 0) return [...imageParts, { type: 'text' as const, text: p.content || '' }]
-        }
-        return { type: 'text' as const, text: p.content || '' }
-      }
-      if (p.contentType === 'reasoning') return { type: 'thinking' as const, text: p.content || '' }
-      if (p.contentType === 'tool_call') {
-        return {
-          type: 'tool_call' as const,
-          toolCallId: p.toolCallId || p.partId,
-          toolName: (p.metadata?.toolCallName as string) || (p.metadata?.toolName as string) || 'tool',
-          input: p.content || p.metadata?.input,
-          status: (p.metadata?.status as string) || undefined,
-          parentToolCallId: (p.metadata?.parentToolCallId as string) || undefined,
-        }
-      }
-      if (p.contentType === 'tool_result') {
-        return {
-          type: 'tool_result' as const,
-          toolCallId: p.toolCallId || p.partId,
-          toolName: (p.metadata?.toolName as string) || undefined,
-          content: p.content || '',
-          isError: p.metadata?.isError as boolean | undefined,
-          status: (p.metadata?.status as string) || undefined,
-          parentToolCallId: (p.metadata?.parentToolCallId as string) || undefined,
-        }
-      }
-      if (p.contentType === 'image') {
-        return {
-          type: 'image' as const,
-          data: p.content || '',
-          mimeType: (p.metadata?.mimeType as string) || 'image/png',
-        }
-      }
-      return { type: 'text' as const, text: p.content || '' }
-    })
-    .flat()
-
-  const textContent = parts
-    .filter((p: any) => p.type === 'text')
-    .map((p: { type: 'text'; text: string }) => p.text)
-    .join('')
-
-  return {
-    id: record.recordId,
-    taskId,
-    role: record.role === 'user' ? ('user' as const) : ('agent' as const),
-    content: textContent,
-    parts,
-    status: record.status,
-    createdAt: record.createTime || Date.now(),
-  }
 }
 
 /**
