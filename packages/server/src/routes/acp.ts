@@ -20,6 +20,7 @@ import {
 } from '@coder/shared'
 import { CloudbaseAgentService, getSupportedModels } from '../agent/cloudbase-agent.service.js'
 import { loadTaskMessagesPage } from '../agent/message-history.service.js'
+import { toSessionInfo } from '../agent/session-projection.service.js'
 import { persistenceService } from '../agent/persistence.service.js'
 import { getAgentRun, removeAgent, type StopReason } from '../agent/agent-registry.js'
 import { agentRuntimeRegistry } from '../agent/runtime/index.js'
@@ -564,15 +565,7 @@ async function handleSessionList(c: any, id: number | string, params: SessionLis
 
   try {
     const tasks = await getDb().tasks.findByUserId(userId, 20)
-    const sessions = tasks.map((t) => ({
-      sessionId: t.id,
-      title: t.title || t.prompt?.slice(0, 100) || '',
-      updatedAt: t.updatedAt,
-      _meta: {
-        status: t.status,
-        createdAt: t.createdAt,
-      },
-    }))
+    const sessions = tasks.map(toSessionInfo)
 
     // 标记 params 已读，避免 TS unused 警告；future 启用 cursor 时移除
     void params
