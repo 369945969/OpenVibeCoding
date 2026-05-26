@@ -57,6 +57,14 @@ const HIDDEN_TOOLS = new Set([
   'TodoWrite',
 ])
 
+// 模块级 dedupe：跨 TaskChat 实例的初次拉取去重。
+// task-details.tsx 中 <TaskChat key={task.id} /> 在多个布局分支挂载，切 task 时
+// 短时间内会有多个实例先后 mount，每个都会触发一次"首次 fetchMessages(true)"。
+// 这层 cache 让相同 taskId 在 INITIAL_FETCH_DEDUPE_MS 内只真正发一次请求；
+// 流完成后的刷新调用走 fetchMessages(false)，不受此限制。
+const INITIAL_FETCH_DEDUPE_MS = 500
+const recentInitialFetches = new Map<string, number>()
+
 export function TaskChat({
   taskId,
   task,
@@ -341,10 +349,24 @@ export function TaskChat({
 
   // ─── Effects ────────────────────────────────────────────────────────
 
-  // Load messages on mount
+  // 用 ref 锁住 fetchMessages，避免它内部 useCallback 依赖（loadHistoryPage / reconnectToStream
+  // 等会随 taskId 同步重建的引用）重新触发本 effect 重复拉取消息。
+  // 真正决定"是否该重拉"的输入只有 taskId / messagesApiBase / historyMode。
+  const fetchMessagesRef = useRef(fetchMessages)
+  fetchMessagesRef.current = fetchMessages
+
+  // Load messages on mount / when input parameters change
+  // 配合模块级 dedupe：跨实例的相同 taskId 在 INITIAL_FETCH_DEDUPE_MS 内只发一次请求。
   useEffect(() => {
-    fetchMessages(true)
-  }, [fetchMessages])
+    const cacheKey = `${historyMode}:${messagesApiBase}:${taskId}`
+    const last = recentInitialFetches.get(cacheKey) ?? 0
+    if (Date.now() - last < INITIAL_FETCH_DEDUPE_MS) {
+      // 重复挂载短时间内跳过实际请求；本实例的 messages 状态会通过 chatStream 共享拿到。
+      return
+    }
+    recentInitialFetches.set(cacheKey, Date.now())
+    fetchMessagesRef.current(true)
+  }, [taskId, messagesApiBase, historyMode])
 
   // Reset tab caches when data becomes available
   useEffect(() => {
