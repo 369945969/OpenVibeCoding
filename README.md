@@ -40,42 +40,42 @@ An open-source alternative to [Lovable](https://lovable.dev) / [v0](https://v0.d
 
 ## Why this project
 
-|                       | Lovable / v0 / bolt.new   | This project                                                              |
-| --------------------- | ------------------------- | ------------------------------------------------------------------------- |
-| Source code           | Closed-source SaaS        | Fully open-source (Apache 2.0), self-hostable                             |
-| Pricing               | Usage-based / subscription| Bring your own cloud resources, cost-controllable                         |
-| Infrastructure        | Vendor-locked             | Tencent CloudBase (DB / Storage / Functions / CDN)                        |
-| Agent engine          | Single built-in model     | CodeBuddy + OpenCode dual engines, free model switching                   |
-| Environment isolation | User-level only           | shared / isolated / task three-tier isolation, multi-tenant ready         |
-| Sandbox               | Platform-managed          | CloudBase SCF + TCR container images, customizable runtime               |
-| Cloud resource ops    | None / limited            | MCP tools operate DB, Storage, Functions, domains directly                |
-| Deploy targets        | Platform-hosted only      | Web CDN / WeChat Mini Program / custom domains                            |
-| Human-in-the-loop     | Basic chat                | Plan mode + four-value ToolConfirm + inline AskUser form                  |
-| Extensibility         | Not extensible            | Monorepo, decoupled frontend/backend, fork-friendly                       |
+|                       | Lovable / v0 / bolt.new    | This project                                                      |
+| --------------------- | -------------------------- | ----------------------------------------------------------------- |
+| Source code           | Closed-source SaaS         | Fully open-source (Apache 2.0), self-hostable                     |
+| Pricing               | Usage-based / subscription | Bring your own cloud resources, cost-controllable                 |
+| Infrastructure        | Vendor-locked              | Tencent CloudBase (DB / Storage / Functions / CDN)                |
+| Agent engine          | Single built-in model      | CodeBuddy + OpenCode dual engines, free model switching           |
+| Environment isolation | User-level only            | shared / isolated / task three-tier isolation, multi-tenant ready |
+| Sandbox               | Platform-managed           | CloudBase SCF + TCR container images, customizable runtime        |
+| Cloud resource ops    | None / limited             | MCP tools operate DB, Storage, Functions, domains directly        |
+| Deploy targets        | Platform-hosted only       | Web CDN / WeChat Mini Program / custom domains                    |
+| Human-in-the-loop     | Basic chat                 | Plan mode + four-value ToolConfirm + inline AskUser form          |
+| Extensibility         | Not extensible             | Monorepo, decoupled frontend/backend, fork-friendly               |
 
 ---
 
 ## Feature highlights
 
-| Capability                  | Highlights                                                                                                            |
-| --------------------------- | --------------------------------------------------------------------------------------------------------------------- |
-| **Dual Agent engines**      | Choose between CodeBuddy and OpenCode, each with its own model list, one-click switch from the UI                     |
-| **Three-tier isolation**    | shared / isolated (per user) / task (per-task subaccount), hot-switchable from Admin without restart                  |
-| **Environment pool**        | Pre-created CloudBase env + CAM + Policy; acquisition latency drops from minutes to milliseconds; fallback on miss   |
-| **Coding sandbox**          | SCF container cold start → PTY terminal → Vite dev server with dynamic port; progress split into pull / ready / init |
-| **Live preview**            | Embedded browser toolbar (address bar / nav / refresh); HMR; auto-feedback loop on preview errors                    |
-| **Sub-workspaces**          | Multiple isolated scopes per session, independent dev servers, ports 5173–5199 dynamically allocated                  |
-| **CloudBase MCP**           | 50+ tools covering DB, Storage, Functions, domains, security rules — Agent operates cloud resources directly         |
-| **Human-in-Loop**           | Four-value tool confirmation (allow / always / deny / exit); inline AskUser form without breaking chat context        |
-| **Plan mode**               | Auto-intercepts write operations; three-button decision (execute / refine / reject); cross-component state sharing    |
-| **Tool rendering**          | 10 dedicated renderers (Bash / Read / Write / Edit / Grep / Glob, etc.); Edit ships with built-in git-diff view       |
-| **One-click deploy**        | Web static hosting → CDN; async WeChat Mini Program deploy; unified artifact aggregated in Deployments tab            |
-| **Image generation**        | AI-generated images auto-uploaded to CloudBase hosting; CDN URL returned; rendered inline as Markdown                 |
-| **Git archive**             | Auto-push to remote on task end; branch by envId + directory by conversationId; in-memory credentials, no token leak  |
-| **Resource dashboard**      | Embedded DB / Storage / SQL / Functions management inside the task detail page                                        |
-| **Admin console**           | User management, env pool monitoring, provision mode config, audit logs                                               |
-| **Scheduled tasks**         | Cron scheduling + distributed lock to prevent re-entry                                                                |
-| **Credential security**     | AES-256-CBC encrypted storage; STS scoped temporary credentials; logs restricted to static strings only               |
+| Capability               | Highlights                                                                                                           |
+| ------------------------ | -------------------------------------------------------------------------------------------------------------------- |
+| **Dual Agent engines**   | Choose between CodeBuddy and OpenCode, each with its own model list, one-click switch from the UI                    |
+| **Three-tier isolation** | shared / isolated (per user) / task (per-task subaccount), hot-switchable from Admin without restart                 |
+| **Environment pool**     | Pre-created CloudBase env + CAM + Policy; acquisition latency drops from minutes to milliseconds; fallback on miss   |
+| **Coding sandbox**       | SCF container cold start → PTY terminal → Vite dev server with dynamic port; progress split into pull / ready / init |
+| **Live preview**         | Embedded browser toolbar (address bar / nav / refresh); HMR; auto-feedback loop on preview errors                    |
+| **Sub-workspaces**       | Multiple isolated scopes per session, independent dev servers, ports 5173–5199 dynamically allocated                 |
+| **CloudBase MCP**        | 50+ tools covering DB, Storage, Functions, domains, security rules — Agent operates cloud resources directly         |
+| **Human-in-Loop**        | Four-value tool confirmation (allow / always / deny / exit); inline AskUser form without breaking chat context       |
+| **Plan mode**            | Auto-intercepts write operations; three-button decision (execute / refine / reject); cross-component state sharing   |
+| **Tool rendering**       | 10 dedicated renderers (Bash / Read / Write / Edit / Grep / Glob, etc.); Edit ships with built-in git-diff view      |
+| **One-click deploy**     | Web static hosting → CDN; async WeChat Mini Program deploy; unified artifact aggregated in Deployments tab           |
+| **Image generation**     | AI-generated images auto-uploaded to CloudBase hosting; CDN URL returned; rendered inline as Markdown                |
+| **Git archive**          | Auto-push to remote on task end; branch by envId + directory by conversationId; in-memory credentials, no token leak |
+| **Resource dashboard**   | Embedded DB / Storage / SQL / Functions management inside the task detail page                                       |
+| **Admin console**        | User management, env pool monitoring, provision mode config, audit logs                                              |
+| **Scheduled tasks**      | Cron scheduling + distributed lock to prevent re-entry                                                               |
+| **Credential security**  | AES-256-CBC encrypted storage; STS scoped temporary credentials; logs restricted to static strings only              |
 
 ---
 
@@ -105,9 +105,9 @@ An open-source alternative to [Lovable](https://lovable.dev) / [v0](https://v0.d
 
 **Deployment complete, view artifact**
 
-| Artifact in chat                       | Deployments tab                    |
-| -------------------------------------- | ---------------------------------- |
-| ![deploy-0](docs/assets/deploy-0.png)  | ![deploy](docs/assets/deploy.png)  |
+| Artifact in chat                      | Deployments tab                   |
+| ------------------------------------- | --------------------------------- |
+| ![deploy-0](docs/assets/deploy-0.png) | ![deploy](docs/assets/deploy.png) |
 
 **Admin: environment pool management**
 
@@ -471,9 +471,3 @@ Scan the QR code to join the community group.
 ## License
 
 Derived from [coding-agent-template](https://github.com/vercel-labs/coding-agent-template) (Copyright 2025 Vercel, Inc.) under Apache License 2.0. See [LICENSE](./LICENSE) and [NOTICE](./NOTICE).
-
-## Community
-
-<p align="center">
-  <img src="https://qcloudimg.tencent-cloud.cn/raw/35d793cd00b0cab22e290690a5590c74.png" alt="WeCom QR Code" width="200">
-</p>

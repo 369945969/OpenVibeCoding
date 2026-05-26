@@ -466,9 +466,7 @@ CODEBUDDY_USE_CUSTOM_MODELS=true
 - [CodeBuddy](https://copilot.tencent.com/) — AI Agent
 - [Hono](https://hono.dev/) — 轻量级 Web 框架
 
-## 加入交流群
-
-扫码加入交流群。
+## 交流社区
 
 <p align="center">
   <img src="./docs/assets/qrcode.png" alt="加入交流群" width="240" />
@@ -477,9 +475,3 @@ CODEBUDDY_USE_CUSTOM_MODELS=true
 ## License
 
 基于 [coding-agent-template](https://github.com/vercel-labs/coding-agent-template) (Copyright 2025 Vercel, Inc.) 改造，沿用 Apache License 2.0。详见 [LICENSE](./LICENSE) 和 [NOTICE](./NOTICE)。
-
-## 交流社区
-
-<p align="center">
-  <img src="https://qcloudimg.tencent-cloud.cn/raw/35d793cd00b0cab22e290690a5590c74.png" alt="企业微信" width="200">
-</p>
