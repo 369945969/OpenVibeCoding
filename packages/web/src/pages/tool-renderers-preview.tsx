@@ -4,10 +4,7 @@
  * 用不同 toolName + mock input/result 逐一渲染所有注册的工具渲染器,
  * 供开发期肉眼验证 P6 重构的视觉效果。生产环境不要链接到这里。
  */
-import { ToolCallCard } from '@/components/chat/tool-call-card'
-import { TOOL_RENDERERS } from '@/components/chat/tool-renderers'
-import { PlanModeCard } from '@/components/chat/plan-mode-card'
-import { MarkdownBlock } from '@/components/chat/markdown-block'
+import { ToolCallCard, TOOL_RENDERERS, PlanModeCard, MarkdownBlock } from '@coder/chat-core'
 
 type MockCase = {
   toolName: string

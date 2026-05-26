@@ -1,6 +1,6 @@
 import { useState, useMemo } from 'react'
 import { Bot, ChevronDown, ChevronRight, Loader2, CheckCircle, XCircle, CirclePause } from 'lucide-react'
-import type { MessagePart } from '@/types/task-chat'
+import type { MessagePart } from '../../types/task-chat'
 import { ToolCallCard } from './tool-call-card'
 
 /**

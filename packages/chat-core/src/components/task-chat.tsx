@@ -7,20 +7,20 @@ import type {
   CheckRun,
   DeploymentInfo,
   ArtifactInfo,
-} from '@/types/task-chat'
-import { useChatStream } from '@/hooks/use-chat-stream'
-import { ThinkingBlock } from '@/components/chat/thinking-block'
-import { ToolCallCard } from '@/components/chat/tool-call-card'
-import { SubagentCard } from '@/components/chat/subagent-card'
-import { AskUserForm } from '@/components/chat/ask-user-form'
-import { InterruptionCard } from '@/components/chat/interruption-card'
-import { AgentStatusIndicator } from '@/components/chat/agent-status-indicator'
-import { extractPlanContent } from '@/components/chat/plan-content'
-import { mdComponents } from '@/components/chat/markdown-block'
+} from '../types/task-chat'
+import { useChatStream } from '../hooks/use-chat-stream'
+import { ThinkingBlock } from './chat/thinking-block'
+import { ToolCallCard } from './chat/tool-call-card'
+import { SubagentCard } from './chat/subagent-card'
+import { AskUserForm } from './chat/ask-user-form'
+import { InterruptionCard } from './chat/interruption-card'
+import { AgentStatusIndicator } from './chat/agent-status-indicator'
+import { extractPlanContent } from './chat/plan-content'
+import { mdComponents } from './chat/markdown-block'
 import { useState, useEffect, useRef, useCallback } from 'react'
-import { Card } from '@/components/ui/card'
-import { Button } from '@/components/ui/button'
-import { Textarea } from '@/components/ui/textarea'
+import { Card } from './ui/card'
+import { Button } from './ui/button'
+import { Textarea } from './ui/textarea'
 import {
   ArrowUp,
   Loader2,
@@ -41,9 +41,9 @@ import {
 import { toast } from 'sonner'
 import { Streamdown } from 'streamdown'
 import { useAtom } from 'jotai'
-import { taskChatInputAtomFamily } from '@/lib/atoms/task'
-import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
-import { TaskListPanel } from '@/components/chat/task-list-panel'
+import { taskChatInputAtomFamily } from '../lib/atoms/chat-input'
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from './ui/dropdown-menu'
+import { TaskListPanel } from './chat/task-list-panel'
 
 const HIDDEN_TOOLS = new Set([
   // CodeBuddy SDK task management 工具（由 TaskListPanel 独立展示）
@@ -63,6 +63,7 @@ export function TaskChat({
   chatStream: externalChatStream,
   readOnly = false,
   messagesApiBase = '',
+  historyMode = 'task-api',
   onManualUserSend,
 }: TaskChatProps) {
   // ─── Local UI state ───────────────────────────────────────────────
@@ -158,6 +159,7 @@ export function TaskChat({
     answerQuestion: chatAnswerQuestion,
     confirmTool: chatConfirmTool,
     reconnectToStream,
+    loadHistoryPage,
     cancelSession,
     cancelledRef,
   } = chat
@@ -179,14 +181,24 @@ export function TaskChat({
       setError(null)
 
       try {
-        const messagesPath = messagesApiBase
-          ? `${messagesApiBase}/tasks/${taskId}/messages`
-          : `/api/tasks/${taskId}/messages`
-        const response = await fetch(messagesPath)
-        const data = await response.json()
+        let data: { messages?: TaskMessage[]; error?: string }
+        let ok = true
+
+        if (historyMode === 'acp') {
+          const result = await loadHistoryPage({ limit: 100, sort: 'DESC' })
+          data = { messages: result.messages }
+        } else {
+          const messagesPath = messagesApiBase
+            ? `${messagesApiBase}/tasks/${taskId}/messages`
+            : `/api/tasks/${taskId}/messages`
+          const response = await fetch(messagesPath)
+          data = await response.json()
+          ok = response.ok
+        }
+
         // Re-check after async
         if (!canFetchMessages()) return
-        if (response.ok && data.messages) {
+        if (ok && data.messages) {
           setMessages(data.messages)
           // ── 刷新恢复 InterruptionCard ──────────────────────────────
           // 服务端 finally 会把 message status 标为 done(即使是 ExecutionError 中断),
@@ -260,7 +272,16 @@ export function TaskChat({
         if (showLoading) setIsLoading(false)
       }
     },
-    [canFetchMessages, setMessages, setToolConfirm, taskId, messagesApiBase, reconnectToStream],
+    [
+      canFetchMessages,
+      setMessages,
+      setToolConfirm,
+      taskId,
+      messagesApiBase,
+      historyMode,
+      loadHistoryPage,
+      reconnectToStream,
+    ],
   )
 
   const fetchPRComments = useCallback(async () => {
@@ -702,7 +723,7 @@ export function TaskChat({
   }
 
   // ─── Shared markdown components ────────────────────────────────────
-  // P6+: `mdComponents` 已统一到 `@/components/chat/markdown-block`,
+  // P6+: `mdComponents` 已统一到 `./chat/markdown-block`,
   //      在页面顶部 import;这里不再重复定义,避免不同位置样式漂移。
 
   // ─── Tab content ───────────────────────────────────────────────────

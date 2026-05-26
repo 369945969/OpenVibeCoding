@@ -14,8 +14,8 @@
  */
 import type { Dispatch, SetStateAction, MutableRefObject } from 'react'
 import type { ExtendedSessionUpdate, AgentPhaseName } from '@coder/shared'
-import type { TaskMessage, ToolConfirmData, DeploymentInfo, ArtifactInfo } from '@/types/task-chat'
-import { extractPlanContent } from '@/components/chat/plan-content'
+import type { TaskMessage, ToolConfirmData, DeploymentInfo, ArtifactInfo } from '../types/task-chat'
+import { extractPlanContent } from '../components/chat/plan-content'
 
 type StreamPhase = 'idle' | 'streaming' | 'waiting_for_interaction'
 

@@ -77,6 +77,61 @@ importers:
         specifier: ^5.9.3
         version: 5.9.3
 
+  packages/chat-core:
+    dependencies:
+      '@coder/shared':
+        specifier: workspace:*
+        version: link:../shared
+      '@git-diff-view/file':
+        specifier: ^0.0.32
+        version: 0.0.32
+      '@git-diff-view/react':
+        specifier: ^0.0.32
+        version: 0.0.32(react-dom@19.2.1(react@19.2.1))(react@19.2.1)
+      '@radix-ui/react-dropdown-menu':
+        specifier: ^2.1.16
+        version: 2.1.16(@types/react-dom@19.2.3(@types/react@19.2.14))(@types/react@19.2.14)(react-dom@19.2.1(react@19.2.1))(react@19.2.1)
+      '@radix-ui/react-slot':
+        specifier: ^1.2.0
+        version: 1.2.4(@types/react@19.2.14)(react@19.2.1)
+      class-variance-authority:
+        specifier: ^0.7.1
+        version: 0.7.1
+      clsx:
+        specifier: ^2.1.1
+        version: 2.1.1
+      jotai:
+        specifier: ^2.16.2
+        version: 2.19.0(@babel/core@7.29.0)(@babel/template@7.28.6)(@types/react@19.2.14)(react@19.2.1)
+      lucide-react:
+        specifier: ^0.544.0
+        version: 0.544.0(react@19.2.1)
+      react:
+        specifier: ^19.0.0
+        version: 19.2.1
+      react-dom:
+        specifier: ^19.0.0
+        version: 19.2.1(react@19.2.1)
+      sonner:
+        specifier: ^2.0.7
+        version: 2.0.7(react-dom@19.2.1(react@19.2.1))(react@19.2.1)
+      streamdown:
+        specifier: ^1.6.11
+        version: 1.6.11(@types/mdast@4.0.4)(micromark-util-types@2.0.2)(micromark@4.0.2)(react@19.2.1)
+      tailwind-merge:
+        specifier: ^3.4.0
+        version: 3.5.0
+    devDependencies:
+      '@types/react':
+        specifier: ^19.2.0
+        version: 19.2.14
+      '@types/react-dom':
+        specifier: ^19.2.0
+        version: 19.2.3(@types/react@19.2.14)
+      typescript:
+        specifier: ~5.7.0
+        version: 5.7.3
+
   packages/dashboard:
     dependencies:
       '@coder/shared':
@@ -304,6 +359,9 @@ importers:
       '@cloudbase/js-sdk':
         specifier: ^2.27.2
         version: 2.27.2(@cloudbase/signature-nodejs@2.2.0)(jsonwebtoken@9.0.3)(ws@8.20.0)
+      '@coder/chat-core':
+        specifier: workspace:*
+        version: link:../chat-core
       '@coder/dashboard':
         specifier: workspace:*
         version: link:../dashboard

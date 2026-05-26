@@ -10,6 +10,7 @@
   },
   "dependencies": {
     "@cloudbase/js-sdk": "^2.27.2",
+    "@coder/chat-core": "workspace:*",
     "@coder/dashboard": "workspace:*",
     "@coder/shared": "workspace:*",
     "@git-diff-view/file": "^0.0.32",

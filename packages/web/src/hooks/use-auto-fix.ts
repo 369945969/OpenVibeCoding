@@ -15,7 +15,7 @@
 
 import { useCallback, useEffect, useRef } from 'react'
 import { toast } from 'sonner'
-import type { useChatStream } from './use-chat-stream'
+import type { useChatStream } from '@coder/chat-core'
 
 const MAX_AUTO_FIX = 3
 const DEDUP_WINDOW_MS = 5_000

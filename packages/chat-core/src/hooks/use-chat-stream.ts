@@ -14,9 +14,15 @@ import { useState, useCallback, useRef, useMemo, useEffect } from 'react'
 import { useAtom } from 'jotai'
 import { toast } from 'sonner'
 import type { ExtendedSessionUpdate, PermissionAction, AgentPermissionMode } from '@coder/shared'
-import type { TaskMessage, AskUserQuestionData, ToolConfirmData, DeploymentInfo, ArtifactInfo } from '@/types/task-chat'
-import { planModeAtomFamily } from '@/lib/atoms/plan-mode'
-import { AcpClient } from '@/lib/acp'
+import type {
+  TaskMessage,
+  AskUserQuestionData,
+  ToolConfirmData,
+  DeploymentInfo,
+  ArtifactInfo,
+} from '../types/task-chat'
+import { planModeAtomFamily } from '../lib/atoms/plan-mode'
+import { AcpClient } from '../lib/acp'
 import { applySessionUpdate, type AgentPhaseInfo } from './apply-session-update'
 
 /** Agent 执行阶段的空闲态;Hook 初始化与 turn 结束时复位用 */
@@ -480,6 +486,21 @@ export function useChatStream(taskId: string, options: UseChatStreamOptions = {}
     [acpClient, applyStreamUpdate, enterStreaming, exitStreaming, taskId],
   )
 
+  /** Load one page of persisted history via ACP session/load replay. */
+  const loadHistoryPage = useCallback(
+    async (params: { cursor?: string | null; limit?: number; sort?: 'ASC' | 'DESC' } = {}) => {
+      for await (const update of acpClient.loadHistory(params)) {
+        if (update.sessionUpdate === 'history_page') {
+          const messages = update.messages as TaskMessage[]
+          setMessages(messages)
+          return { messages, nextCursor: update.nextCursor ?? null }
+        }
+      }
+      return { messages: [] as TaskMessage[], nextCursor: null }
+    },
+    [acpClient],
+  )
+
   /** Cancel the current session/agent run via ACP. */
   const cancelledRef = useRef(false)
   const cancelSession = useCallback(async () => {
@@ -547,6 +568,7 @@ export function useChatStream(taskId: string, options: UseChatStreamOptions = {}
     answerQuestion,
     confirmTool,
     reconnectToStream,
+    loadHistoryPage,
     cancelSession,
     cancelledRef,
   }

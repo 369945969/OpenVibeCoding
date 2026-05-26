@@ -13,9 +13,11 @@ export default defineConfig({
       '@': path.resolve(__dirname, './src'),
       // 让 web 直接引用 dashboard 源码，vite 一起打包处理
       '@coder/dashboard': path.resolve(__dirname, '../dashboard/src'),
+      // chat-core 直接引用源码，跟 dashboard 一致；workspace deps 也能解析，但显式 alias 更稳
+      '@coder/chat-core': path.resolve(__dirname, '../chat-core/src/index.ts'),
     },
-    // 防止 jotai 被重复实例化：web 和 dashboard 必须共享同一份 module，
-    // 否则 getDefaultStore() 在 dashboard 模块里和 web 模块里返回的是不同的 store。
+    // 防止 jotai 被重复实例化：web、dashboard、chat-core 必须共享同一份 module，
+    // 否则 getDefaultStore() 在不同模块里返回的是不同的 store。
     dedupe: ['jotai', 'react', 'react-dom'],
   },
   define: {

@@ -7,6 +7,10 @@
 @source '../../dashboard/src/**/*.tsx';
 @source '../../dashboard/src/**/*.ts';
 
+/* 让 Tailwind 扫描 chat-core 源码（独立 workspace 包，默认不在 web/src 扫描范围内） */
+@source '../../chat-core/src/**/*.tsx';
+@source '../../chat-core/src/**/*.ts';
+
 @custom-variant dark (&:is(.dark *));
 
 /* 覆盖 variables.css 设置到 :root 的变量不影响 web 自身样式 */

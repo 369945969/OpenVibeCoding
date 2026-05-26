@@ -1,5 +1,5 @@
 import type { Task } from '@coder/shared'
-import type { ChatStreamReturn } from '@/hooks/use-chat-stream'
+import type { ChatStreamReturn } from '../hooks/use-chat-stream'
 
 // ─── Message Types ────────────────────────────────────────────────────
 
@@ -78,6 +78,8 @@ export interface TaskChatProps {
   readOnly?: boolean
   /** 消息 API 基础路径，默认 ''。管理员查看时设为 '/api/admin' */
   messagesApiBase?: string
+  /** 历史消息加载方式：web 默认走 /api/tasks/:id/messages；playground 可走 ACP session/load replay */
+  historyMode?: 'task-api' | 'acp'
   /**
    * 用户手动点"发送"时触发（不包括自动修复之类的编程化发送）。
    * 由父层 TaskDetails 用来重置 useAutoFix 的自动修复计数。

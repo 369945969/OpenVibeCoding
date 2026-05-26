@@ -6,7 +6,7 @@ import { Badge } from '../../components/ui/badge'
 import { toast } from 'sonner'
 import { ArrowLeft, Loader2 } from 'lucide-react'
 import type { Task } from '@coder/shared'
-import { TaskChat } from '../../components/task-chat'
+import { TaskChat } from '@coder/chat-core'
 import { FileBrowser } from '../../components/file-browser'
 
 const statusLabels: Record<string, { label: string; variant: 'default' | 'secondary' | 'destructive' | 'outline' }> = {

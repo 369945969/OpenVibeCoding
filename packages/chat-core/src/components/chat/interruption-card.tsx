@@ -1,9 +1,9 @@
 import { ShieldAlert, Loader2 } from 'lucide-react'
 import type { PermissionAction } from '@coder/shared'
-import { Card } from '@/components/ui/card'
-import { Button } from '@/components/ui/button'
-import { Badge } from '@/components/ui/badge'
-import type { ToolConfirmData } from '@/types/task-chat'
+import { Card } from '../ui/card'
+import { Button } from '../ui/button'
+import { Badge } from '../ui/badge'
+import type { ToolConfirmData } from '../../types/task-chat'
 import { PlanModeCard } from './plan-mode-card'
 import { extractPlanContent } from './plan-content'
 

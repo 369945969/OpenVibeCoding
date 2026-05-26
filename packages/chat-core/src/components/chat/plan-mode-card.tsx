@@ -1,7 +1,7 @@
 import { Rocket, Loader2, CirclePause } from 'lucide-react'
 import type { PermissionAction } from '@coder/shared'
-import { Card } from '@/components/ui/card'
-import { Button } from '@/components/ui/button'
+import { Card } from '../ui/card'
+import { Button } from '../ui/button'
 import { MarkdownBlock } from './markdown-block'
 
 /**

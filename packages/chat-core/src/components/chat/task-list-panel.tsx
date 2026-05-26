@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react'
 import { CheckCircle2, Circle, Loader2, ListTodo, ChevronDown, ChevronRight, CirclePause } from 'lucide-react'
-import type { TaskMessage, MessagePart } from '@/types/task-chat'
+import type { TaskMessage, MessagePart } from '../../types/task-chat'
 
 // ---------------------------------------------------------------------------
 // Types

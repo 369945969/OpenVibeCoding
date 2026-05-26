@@ -20,7 +20,13 @@
  * - XHR（本项目始终用 fetch + ReadableStream）
  * - React state（这里是纯协议层，不感知 UI）
  */
-import type { ExtendedSessionUpdate } from '@coder/shared'
+import type {
+  ExtendedSessionUpdate,
+  SessionListParams,
+  SessionListResult,
+  SessionNewMeta,
+  SessionNewResult,
+} from '@coder/shared'
 import { fetchWithRetry } from './fetch-with-retry'
 
 export interface AcpClientOptions {
@@ -226,10 +232,108 @@ export class AcpClient {
   }
 
   /**
+   * replay 一页历史消息（ACP session/load + replay=true）。
+   */
+  async *loadHistory(
+    params: { cursor?: string | null; limit?: number; sort?: 'ASC' | 'DESC' } = {},
+  ): AsyncIterable<ExtendedSessionUpdate> {
+    const body = this.buildRequestBody('session/load', {
+      sessionId: this.taskId,
+      replay: true,
+      cursor: params.cursor ?? undefined,
+      limit: params.limit,
+      sort: params.sort,
+    })
+    const res = await fetch(this.baseUrl, {
+      method: 'POST',
+      credentials: 'include',
+      headers: { 'Content-Type': 'application/json', ...(this.taskId ? { 'X-Task-Id': this.taskId } : {}) },
+      body: JSON.stringify(body),
+    })
+
+    if (!res.ok || !res.body) {
+      const msg = await extractErrorMessage(res)
+      throw new AcpStreamError(msg || `ACP session/load replay failed: ${res.status} ${res.statusText}`, 'session/load')
+    }
+
+    const contentType = res.headers.get('content-type') || ''
+    if (!contentType.includes('text/event-stream')) {
+      try {
+        const json = (await res.json()) as JsonRpcResponse
+        if (json.error) {
+          throw new AcpStreamError(json.error.message || 'ACP session/load replay rejected', 'session/load')
+        }
+      } catch (e) {
+        if (e instanceof AcpStreamError) throw e
+      }
+      return
+    }
+
+    yield* parseSseBody(res, 'session/load')
+  }
+
+  /**
    * POST session/cancel。
    */
   async cancel(): Promise<void> {
     await this.request('session/cancel', { sessionId: this.taskId })
+  }
+
+  /**
+   * 列出当前用户的会话（ACP session/list）。
+   *
+   * 此方法不绑定 taskId — 它列的是"所有 session"，不属于任何特定会话。
+   * 因此提供为静态方法：调用方只需提供 baseUrl，不必先造 AcpClient 实例。
+   *
+   * 默认 20 条，按 createdAt desc。当前后端忽略 params.cwd 与 params.orderBy。
+   */
+  static async listSessions(baseUrl: string, params: SessionListParams = {}): Promise<SessionListResult> {
+    return AcpClient.staticRpc<SessionListResult>(baseUrl, 'session/list', params)
+  }
+
+  /**
+   * 创建新会话（ACP session/new）。
+   *
+   * 此方法不绑定 taskId — 调用方在拿到返回的 sessionId 后再用它构造 AcpClient
+   * 实例进入对话。提供为静态方法以避免"造 AcpClient → initialize → 再创建"
+   * 的循环。
+   *
+   * - conversationId 不填则服务端生成 uuid
+   * - meta 是会话级配置（runtime/model/mode 等），全部可选
+   */
+  static async createSession(
+    baseUrl: string,
+    options: { conversationId?: string; meta?: SessionNewMeta } = {},
+  ): Promise<SessionNewResult> {
+    return AcpClient.staticRpc<SessionNewResult>(baseUrl, 'session/new', options)
+  }
+
+  /**
+   * 静态方法共享的最小 JSON-RPC 调用（不绑定 taskId、不走 initialize 状态机）。
+   * 仅用于 listSessions / createSession 这类"会话外"操作。
+   */
+  private static async staticRpc<T>(baseUrl: string, method: string, params: unknown): Promise<T> {
+    const body = {
+      jsonrpc: '2.0' as const,
+      id: Date.now(),
+      method,
+      params,
+    }
+    const res = await fetchWithRetry(baseUrl, {
+      method: 'POST',
+      credentials: 'include',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    })
+    if (!res.ok) {
+      const msg = await extractErrorMessage(res)
+      throw new Error(msg || `ACP ${method} failed: ${res.status}`)
+    }
+    const json = (await res.json()) as JsonRpcResponse<T>
+    if (json.error) {
+      throw new Error(json.error.message || `ACP ${method} protocol error`)
+    }
+    return json.result as T
   }
 
   // ────────────────────────────────────────────────────────────────────
