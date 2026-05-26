@@ -5,9 +5,11 @@
   "scripts": {
     "dev": "concurrently \"pnpm dev:server\" \"pnpm dev:web\"",
     "dev:web": "pnpm --filter @coder/web dev",
+    "dev:playground": "pnpm --filter @coder/chat-playground dev",
     "dev:server": "pnpm --filter @coder/server dev",
     "build": "pnpm build:web && pnpm build:server",
     "build:web": "pnpm --filter @coder/web build",
+    "build:playground": "pnpm --filter @coder/chat-playground build",
     "build:server": "pnpm --filter @coder/server build",
     "start": "pnpm --filter @coder/server start",
     "lint": "eslint",
