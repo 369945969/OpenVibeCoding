@@ -8,6 +8,12 @@ import { ChatTranscript } from './chat/chat-transcript'
 export interface AcpChatProps {
   sessionId: string
   onStreamComplete?: () => void
+  /** ACP JSON-RPC endpoint，默认 `/api/agent/acp`（同源 web）。 */
+  acpBaseUrl?: string
+  /** ACP observe SSE endpoint，默认从 acpBaseUrl 推导。 */
+  acpObserveBaseUrl?: string
+  /** 每次 ACP 请求附加的 headers（如第三方 server 的 Bearer token）。 */
+  getAcpHeaders?: () => Record<string, string> | undefined
 }
 
 /**
@@ -17,7 +23,7 @@ export interface AcpChatProps {
  * 不包含 web 产品层的部署产物、PR 评论、Actions tab、预览等能力。
  * Transcript 样式复用 TaskChat 已定稿的 ChatTranscript。
  */
-export function AcpChat({ sessionId, onStreamComplete }: AcpChatProps) {
+export function AcpChat({ sessionId, onStreamComplete, acpBaseUrl, acpObserveBaseUrl, getAcpHeaders }: AcpChatProps) {
   const [draft, setDraft] = useState('')
   const [loadingHistory, setLoadingHistory] = useState(true)
   const [currentTime, setCurrentTime] = useState(Date.now())
@@ -33,6 +39,9 @@ export function AcpChat({ sessionId, onStreamComplete }: AcpChatProps) {
   const chat = useChatStream(sessionId, {
     onStreamComplete,
     scrollToBottom: () => messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' }),
+    acpBaseUrl,
+    acpObserveBaseUrl,
+    getAcpHeaders,
   })
 
   const loadHistory = useCallback(async () => {

@@ -36,6 +36,11 @@ export interface AcpClientOptions {
   observeBaseUrl?: string
   /** 会话/任务 ID，所有方法的 sessionId 都绑定到此 */
   taskId: string
+  /**
+   * 每次请求前调用，返回额外 headers（如 Bearer token）。
+   * 同名 header 会覆盖默认值；返回值变化无需重建 client。
+   */
+  getHeaders?: () => Record<string, string> | undefined
 }
 
 /**
@@ -62,6 +67,7 @@ export class AcpClient {
   private readonly baseUrl: string
   private readonly observeBaseUrl: string
   private readonly taskId: string
+  private readonly getExtraHeaders?: () => Record<string, string> | undefined
 
   /** 单调递增的 JSON-RPC id（避免 Date.now() 同毫秒冲突） */
   private nextId = 1
@@ -76,6 +82,21 @@ export class AcpClient {
     this.baseUrl = options.baseUrl
     this.observeBaseUrl = options.observeBaseUrl ?? options.baseUrl.replace(/\/acp$/, '/observe')
     this.taskId = options.taskId
+    this.getExtraHeaders = options.getHeaders
+  }
+
+  /**
+   * 合并请求 headers：默认 Content-Type + X-Task-Id（如有），叠加 getHeaders() 返回值。
+   * 调用方传 `withTaskId=false` 用于 GET observe 等不需要 X-Task-Id 的请求。
+   */
+  private buildHeaders(opts: { withTaskId?: boolean; jsonBody?: boolean } = {}): Record<string, string> {
+    const { withTaskId = true, jsonBody = true } = opts
+    const headers: Record<string, string> = {}
+    if (jsonBody) headers['Content-Type'] = 'application/json'
+    if (withTaskId && this.taskId) headers['X-Task-Id'] = this.taskId
+    const extra = this.getExtraHeaders?.()
+    if (extra) Object.assign(headers, extra)
+    return headers
   }
 
   // ────────────────────────────────────────────────────────────────────
@@ -111,7 +132,7 @@ export class AcpClient {
     const res = await fetchWithRetry(withIntentQuery(this.baseUrl, method), {
       method: 'POST',
       credentials: 'include',
-      headers: { 'Content-Type': 'application/json', ...(this.taskId ? { 'X-Task-Id': this.taskId } : {}) },
+      headers: this.buildHeaders(),
       body: JSON.stringify(body),
     })
 
@@ -143,7 +164,7 @@ export class AcpClient {
       await fetch(withIntentQuery(this.baseUrl, method), {
         method: 'POST',
         credentials: 'include',
-        headers: { 'Content-Type': 'application/json', ...(this.taskId ? { 'X-Task-Id': this.taskId } : {}) },
+        headers: this.buildHeaders(),
         body: JSON.stringify({ jsonrpc: '2.0', method, params }),
       })
     } catch {
@@ -166,7 +187,7 @@ export class AcpClient {
     const res = await fetch(withIntentQuery(this.baseUrl, method), {
       method: 'POST',
       credentials: 'include',
-      headers: { 'Content-Type': 'application/json', ...(this.taskId ? { 'X-Task-Id': this.taskId } : {}) },
+      headers: this.buildHeaders(),
       body: JSON.stringify(body),
       signal,
     })
@@ -208,7 +229,11 @@ export class AcpClient {
    */
   async *observe(turnId: string, signal?: AbortSignal): AsyncIterable<ExtendedSessionUpdate> {
     const url = withIntentQuery(`${this.observeBaseUrl}/${this.taskId}?turnId=${encodeURIComponent(turnId)}`, 'observe')
-    const res = await fetch(url, { credentials: 'include', signal })
+    const res = await fetch(url, {
+      credentials: 'include',
+      signal,
+      headers: this.buildHeaders({ jsonBody: false, withTaskId: false }),
+    })
 
     if (!res.ok || !res.body) {
       const msg = await extractErrorMessage(res)
@@ -247,7 +272,7 @@ export class AcpClient {
     const res = await fetch(withIntentQuery(this.baseUrl, 'session/load'), {
       method: 'POST',
       credentials: 'include',
-      headers: { 'Content-Type': 'application/json', ...(this.taskId ? { 'X-Task-Id': this.taskId } : {}) },
+      headers: this.buildHeaders(),
       body: JSON.stringify(body),
     })
 
@@ -287,8 +312,12 @@ export class AcpClient {
    *
    * 默认 20 条，按 createdAt desc。当前后端忽略 params.cwd 与 params.orderBy。
    */
-  static async listSessions(baseUrl: string, params: SessionListParams = {}): Promise<SessionListResult> {
-    return AcpClient.staticRpc<SessionListResult>(baseUrl, 'session/list', params)
+  static async listSessions(
+    baseUrl: string,
+    params: SessionListParams = {},
+    extraHeaders?: Record<string, string>,
+  ): Promise<SessionListResult> {
+    return AcpClient.staticRpc<SessionListResult>(baseUrl, 'session/list', params, extraHeaders)
   }
 
   /**
@@ -304,15 +333,21 @@ export class AcpClient {
   static async createSession(
     baseUrl: string,
     options: { conversationId?: string; meta?: SessionNewMeta } = {},
+    extraHeaders?: Record<string, string>,
   ): Promise<SessionNewResult> {
-    return AcpClient.staticRpc<SessionNewResult>(baseUrl, 'session/new', options)
+    return AcpClient.staticRpc<SessionNewResult>(baseUrl, 'session/new', options, extraHeaders)
   }
 
   /**
    * 静态方法共享的最小 JSON-RPC 调用（不绑定 taskId、不走 initialize 状态机）。
    * 仅用于 listSessions / createSession 这类"会话外"操作。
    */
-  private static async staticRpc<T>(baseUrl: string, method: string, params: unknown): Promise<T> {
+  private static async staticRpc<T>(
+    baseUrl: string,
+    method: string,
+    params: unknown,
+    extraHeaders?: Record<string, string>,
+  ): Promise<T> {
     const body = {
       jsonrpc: '2.0' as const,
       id: Date.now(),
@@ -322,7 +357,7 @@ export class AcpClient {
     const res = await fetchWithRetry(withIntentQuery(baseUrl, method), {
       method: 'POST',
       credentials: 'include',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', ...(extraHeaders || {}) },
       body: JSON.stringify(body),
     })
     if (!res.ok) {
@@ -388,7 +423,7 @@ export class AcpClient {
     const res = await fetchWithRetry(withIntentQuery(this.baseUrl, method), {
       method: 'POST',
       credentials: 'include',
-      headers: { 'Content-Type': 'application/json' },
+      headers: this.buildHeaders({ withTaskId: false }),
       body: JSON.stringify(body),
     })
     if (!res.ok) {
@@ -462,7 +497,7 @@ async function* parseSseBody(res: Response, rpcMethod: string): AsyncIterable<Ex
 
 function withIntentQuery(url: string, intent: string): string {
   const separator = url.includes('?') ? '&' : '?'
-  return `${url}${separator}i=${encodeURIComponent(intent)}`
+  return `${url}${separator}i=${encodeURIComponent(intent.replace('/', '.'))}`
 }
 
 /**

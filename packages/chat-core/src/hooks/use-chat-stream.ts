@@ -41,6 +41,12 @@ interface UseChatStreamOptions {
   scrollToBottom?: () => void
   /** 外部提供的 wasAtBottom 检测 */
   wasAtBottomRef?: React.RefObject<boolean>
+  /** ACP JSON-RPC endpoint，默认 `/api/agent/acp`（同源 web）。 */
+  acpBaseUrl?: string
+  /** ACP observe SSE endpoint，默认从 acpBaseUrl 推导（替换尾部 /acp → /observe）。 */
+  acpObserveBaseUrl?: string
+  /** 每次 ACP 请求附加的 headers（如第三方 server 的 Bearer token）。 */
+  getAcpHeaders?: () => Record<string, string> | undefined
 }
 
 // ─── Return type (exported for parent components) ─────────────────────
@@ -67,9 +73,20 @@ export function useChatStream(taskId: string, options: UseChatStreamOptions = {}
 
   // ── ACP protocol client (P3) ──
   // 每 taskId 一个实例；构造后引用稳定，可安全纳入 useCallback 依赖。
+  // headers 通过 getter 读取最新 ref，不进 useMemo 依赖（即 token 变化无需重建 client）
+  const acpHeadersRef = useRef(options.getAcpHeaders)
+  acpHeadersRef.current = options.getAcpHeaders
+  const acpBaseUrl = options.acpBaseUrl ?? '/api/agent/acp'
+  const acpObserveBaseUrl = options.acpObserveBaseUrl
   const acpClient = useMemo(
-    () => new AcpClient({ baseUrl: '/api/agent/acp', observeBaseUrl: '/api/agent/observe', taskId }),
-    [taskId],
+    () =>
+      new AcpClient({
+        baseUrl: acpBaseUrl,
+        observeBaseUrl: acpObserveBaseUrl,
+        taskId,
+        getHeaders: () => acpHeadersRef.current?.(),
+      }),
+    [acpBaseUrl, acpObserveBaseUrl, taskId],
   )
 
   // ── User interaction state ──
