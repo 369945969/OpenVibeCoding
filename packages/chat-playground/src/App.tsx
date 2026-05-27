@@ -13,15 +13,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { AcpChat, AcpClient } from '@coder/chat-core'
 import type { SessionInfo } from '@coder/shared'
-import {
-  Plus,
-  Loader2,
-  AlertTriangle,
-  MessageSquare,
-  RefreshCw,
-  Settings as SettingsIcon,
-  X,
-} from 'lucide-react'
+import { Plus, Loader2, AlertTriangle, MessageSquare, RefreshCw, Settings as SettingsIcon, X } from 'lucide-react'
 import { toast } from 'sonner'
 
 const STORAGE_KEY = 'chat-playground:config:v1'
@@ -216,9 +208,7 @@ export default function App() {
             ACP: {acpBaseUrl}
           </div>
           {Object.keys(parsedHeaders).length > 0 && (
-            <div className="truncate text-muted-foreground/70">
-              headers: {Object.keys(parsedHeaders).join(', ')}
-            </div>
+            <div className="truncate text-muted-foreground/70">headers: {Object.keys(parsedHeaders).join(', ')}</div>
           )}
         </footer>
       </aside>
@@ -239,9 +229,7 @@ export default function App() {
         )}
       </main>
 
-      {showSettings && (
-        <SettingsDialog initial={config} onClose={() => setShowSettings(false)} onSave={applyConfig} />
-      )}
+      {showSettings && <SettingsDialog initial={config} onClose={() => setShowSettings(false)} onSave={applyConfig} />}
     </div>
   )
 }
@@ -333,10 +321,7 @@ function SettingsDialog({
             恢复默认
           </button>
           <div className="flex items-center gap-2">
-            <button
-              onClick={onClose}
-              className="px-3 py-1.5 rounded text-xs border border-border hover:bg-muted"
-            >
+            <button onClick={onClose} className="px-3 py-1.5 rounded text-xs border border-border hover:bg-muted">
               取消
             </button>
             <button
