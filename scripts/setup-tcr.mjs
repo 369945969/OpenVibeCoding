@@ -33,6 +33,51 @@ const tencentcloud = require('tencentcloud-sdk-nodejs')
 // ===================== Constants =====================
 
 const TCR_DOMAIN = 'ccr.ccs.tencentyun.com'
+
+// Resolve docker-compatible CLI: prefer docker, fallback to podman
+function resolveDockerCmd() {
+  try {
+    execSync('docker info', { stdio: 'pipe' })
+    return 'docker'
+  } catch {
+    // docker not available
+  }
+
+  // Try podman — if machine is stopped/disconnected, attempt to start it
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      execSync('podman info', { stdio: 'pipe' })
+      try {
+        const socket = execSync('podman machine inspect --format "{{.ConnectionInfo.PodmanSocket.Path}}"', { stdio: 'pipe' }).toString().trim()
+        if (socket && !process.env.DOCKER_HOST) {
+          process.env.DOCKER_HOST = `unix://${socket}`
+        }
+      } catch {
+        // native Linux podman, no machine needed
+      }
+      return 'podman'
+    } catch {
+      if (attempt === 0) {
+        // podman info failed — try starting the machine and retry once
+        try {
+          execSync('podman machine start', { stdio: 'pipe' })
+        } catch {
+          // machine may already be running but SSH is broken — try stop+start
+          try {
+            execSync('podman machine stop', { stdio: 'pipe' })
+            execSync('podman machine start', { stdio: 'pipe' })
+          } catch {
+            break
+          }
+        }
+      }
+    }
+  }
+
+  return null
+}
+
+const DOCKER_CMD = resolveDockerCmd()
 const ENV_FILE = resolve(process.cwd(), '.env.local')
 const CLOUDBASE_AUTH_FILE = resolve(homedir(), '.config/.cloudbase/auth.json')
 const DEFAULT_NAMESPACE_PREFIX = 'cloudbase-vibecoding'
@@ -306,20 +351,7 @@ function getCloudbaseCredential() {
  * auth.json 路径无法获取 callerUin，只有 STS 路径才有
  */
 async function getCloudbaseAccountId(secretId, secretKey) {
-  // 1. 优先从 auth.json 读取
-  if (existsSync(CLOUDBASE_AUTH_FILE)) {
-    try {
-      const content = readFileSync(CLOUDBASE_AUTH_FILE, 'utf-8')
-      const auth = JSON.parse(content)
-      if (auth.credential?.uin) {
-        return { accountId: auth.credential.uin, callerUin: '' }
-      }
-    } catch {
-      // ignore parse errors
-    }
-  }
-
-  // 2. 通过 STS.GetCallerIdentity 获取 accountId
+  // 1. 有永久密钥时优先走 STS，能准确区分主/子账号
   if (secretId && secretKey) {
     try {
       const StsClient = tencentcloud.sts.v20180813.Client
@@ -330,11 +362,26 @@ async function getCloudbaseAccountId(secretId, secretKey) {
       })
       const resp = await stsClient.GetCallerIdentity({})
       if (resp?.AccountId) {
-        // 返回对象包含 accountId 和 callerUin，供调用方区分主账号/子账号
+        // 主账号时 AccountId == Uin；子账号时 Uin 是子账号 UIN，AccountId 是主账号 AppID
         return { accountId: resp.AccountId, callerUin: resp.Uin || '' }
       }
     } catch {
-      // ignore API errors
+      // ignore API errors, fall through to auth.json
+    }
+  }
+
+  // 2. 兜底：从 auth.json 读取（临时凭证登录场景）
+  if (existsSync(CLOUDBASE_AUTH_FILE)) {
+    try {
+      const content = readFileSync(CLOUDBASE_AUTH_FILE, 'utf-8')
+      const auth = JSON.parse(content)
+      if (auth.credential?.uin) {
+        // auth.json 里的 uin 是登录者 UIN（可能是主账号也可能是子账号）
+        // 无法区分，统一作为 callerUin 使用
+        return { accountId: '', callerUin: auth.credential.uin }
+      }
+    } catch {
+      // ignore parse errors
     }
   }
 
@@ -527,36 +574,67 @@ async function resetTcrPassword(_client, _password) {
 // ===================== Docker Functions =====================
 
 function checkDocker() {
+  return DOCKER_CMD !== null
+}
+
+function dockerLoginOnce(domain, username, password) {
+  if (!DOCKER_CMD) return false
   try {
-    execSync('docker info', { stdio: 'pipe' })
+    runCommand(`echo '${password}' | ${DOCKER_CMD} login ${domain} --username ${username} --password-stdin`, true)
     return true
   } catch {
     return false
   }
 }
 
-function dockerLogin(domain, username, password) {
-  log('Logging in to TCR registry...')
-
-  try {
-    // Use docker login with password-stdin for security
-    runCommand(`echo '${password}' | docker login ${domain} --username ${username} --password-stdin`, true)
-    log('Docker login successful', 'success')
-    return true
-  } catch (error) {
-    log('Docker login failed', 'error')
-    log('密码可能不正确，请前往 TCR 控制台重置：', 'warn')
-    log('  https://console.cloud.tencent.com/tcr/?rid=1', 'info')
-    log('  → 找到广州地域的个人实例 → 点击「更多」→「重置登录密码」', 'info')
-    return false
+async function dockerLogin(domain, username, password) {
+  if (!DOCKER_CMD) {
+    log('Docker / Podman 未安装或未运行', 'error')
+    return { success: false, username, password }
   }
+  log(`Logging in to TCR registry via ${DOCKER_CMD}...`)
+
+  if (dockerLoginOnce(domain, username, password)) {
+    log('Login successful', 'success')
+    return { success: true, username, password }
+  }
+
+  // Login failed — username or password may be wrong
+  log('Login failed', 'error')
+  console.log('')
+  console.log('  TCR 登录失败，可能原因：')
+  console.log('  1. 密码不正确（可前往控制台重置：https://console.cloud.tencent.com/tcr/?rid=1）')
+  console.log('  2. 用户名不正确（主账号用 AppID，子账号用子账号 UIN）')
+  console.log('     如果是子账号重置了 TCR 密码，请输入该子账号的腾讯云 UIN 作为用户名')
+  console.log(`  当前使用的用户名：${username}`)
+  console.log('')
+
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    const newUsername = await promptInput(`TCR 用户名（直接回车保持 ${username}）`)
+    const finalUsername = newUsername.trim() || username
+
+    const newPassword = await promptInput(`TCR 密码（第 ${attempt}/3 次）`, true)
+    if (!newPassword) continue
+
+    if (dockerLoginOnce(domain, finalUsername, newPassword)) {
+      log('Login successful', 'success')
+      saveEnvVar('TCR_USERNAME', finalUsername)
+      saveEnvVar('TCR_PASSWORD', newPassword)
+      log('用户名和密码已保存到 .env.local', 'info')
+      return { success: true, username: finalUsername, password: newPassword }
+    }
+    log('登录失败，请重试', 'error')
+  }
+
+  log('登录失败，已超过最大重试次数', 'error')
+  return { success: false, username, password }
 }
 
 function pullImage(image) {
   log(`Pulling image '${image}'...`)
 
   try {
-    runCommand(`docker pull ${image}`)
+    runCommand(`${DOCKER_CMD} pull ${image}`)
     log(`Image pulled successfully`, 'success')
     return true
   } catch (error) {
@@ -569,7 +647,7 @@ function tagImage(sourceImage, targetImage) {
   log(`Tagging image '${sourceImage}' -> '${targetImage}'...`)
 
   try {
-    runCommand(`docker tag ${sourceImage} ${targetImage}`, true)
+    runCommand(`${DOCKER_CMD} tag ${sourceImage} ${targetImage}`, true)
     log('Image tagged successfully', 'success')
     return true
   } catch (error) {
@@ -582,7 +660,7 @@ function pushImage(image) {
   log(`Pushing image '${image}'...`)
 
   try {
-    runCommand(`docker push ${image}`)
+    runCommand(`${DOCKER_CMD} push ${image}`)
     log(`Image pushed successfully`, 'success')
     return true
   } catch (error) {
@@ -918,15 +996,15 @@ async function setupTcr(config) {
   saveEnvVar('TCR_NAMESPACE', namespace)
   log('Namespace saved to .env.local', 'info')
 
-  // 确保有 accountId（Docker login 需要）
-  if (!config.accountId) {
+  // 确保有 accountId 或 callerUin（Docker login 需要 username）
+  if (!config.accountId && !config.callerUin) {
     const idResult = await getCloudbaseAccountId(config.secretId, config.secretKey)
     if (idResult) {
       config.accountId = idResult.accountId
       if (idResult.callerUin) config.callerUin = idResult.callerUin
     }
   }
-  if (!config.accountId) {
+  if (!config.accountId && !config.callerUin) {
     log('未能自动获取账号 ID（AppID）', 'warn')
     log('可在腾讯云控制台「账号信息」页面查看', 'info')
     log('  https://console.cloud.tencent.com/developer', 'info')
@@ -940,10 +1018,12 @@ async function setupTcr(config) {
     log('账号 ID 已保存', 'success')
   }
 
-  // Step 4: Docker login (retry with manual username if first attempt fails)
-  // 子账号 callerUin 不为空时直接用 callerUin 作为 username，否则用 accountId（主账号）
-  let dockerUsername = config.callerUin || config.accountId
-  if (!dockerLogin(TCR_DOMAIN, dockerUsername, password)) {
+  // Step 4: Docker login
+  // 优先用 .env.local 里保存的 TCR_USERNAME，避免主/子账号混淆
+  // 否则用 callerUin（子账号 UIN）或 accountId（主账号 AppID）推断
+  let dockerUsername = config.tcrUsername || config.callerUin || config.accountId
+  const loginResult = await dockerLogin(TCR_DOMAIN, dockerUsername, password)
+  if (!loginResult.success) {
     log('Docker 登录失败，可能是用户名不正确', 'warn')
     console.log('')
     console.log(`  当前用户名：${dockerUsername}`)
@@ -955,7 +1035,7 @@ async function setupTcr(config) {
       return false
     }
     dockerUsername = retryUsername.trim()
-    if (!dockerLogin(TCR_DOMAIN, dockerUsername, password)) {
+    if (!(await dockerLogin(TCR_DOMAIN, dockerUsername, password)).success) {
       return false
     }
   }
@@ -963,13 +1043,13 @@ async function setupTcr(config) {
   // Step 6 (was 5): Check local image, pull only if not present
   log(`Checking for local image '${config.localImage}'...`)
   try {
-    runCommand(`docker inspect ${config.localImage}`, true)
+    runCommand(`${DOCKER_CMD} inspect ${config.localImage}`, true)
     log('Local image found, skipping pull', 'success')
   } catch {
     log('Local image not found locally, pulling from registry...')
     if (!pullImage(config.localImage)) {
-      log('Cannot pull image. Make sure Docker can reach ghcr.io, or pull manually:', 'error')
-      log(`  docker pull ${config.localImage}`, 'info')
+      log(`Cannot pull image. Make sure ${DOCKER_CMD} can reach ghcr.io, or pull manually:`, 'error')
+      log(`  ${DOCKER_CMD} pull ${config.localImage}`, 'info')
       return false
     }
   }
@@ -1100,12 +1180,14 @@ async function main() {
 
   // Parse command line arguments
   const args = process.argv.slice(2)
+  const envFromFile = loadEnvFile()
   const config = {
-    secretId: process.env.TCB_SECRET_ID || process.env.TENCENTCLOUD_SECRET_ID || '',
-    secretKey: process.env.TCB_SECRET_KEY || process.env.TENCENTCLOUD_SECRET_KEY || '',
-    accountId: process.env.TENCENTCLOUD_ACCOUNT_ID || '',
+    secretId: process.env.TCB_SECRET_ID || process.env.TENCENTCLOUD_SECRET_ID || envFromFile['TCB_SECRET_ID'] || '',
+    secretKey: process.env.TCB_SECRET_KEY || process.env.TENCENTCLOUD_SECRET_KEY || envFromFile['TCB_SECRET_KEY'] || '',
+    accountId: process.env.TENCENTCLOUD_ACCOUNT_ID || envFromFile['TENCENTCLOUD_ACCOUNT_ID'] || '',
     callerUin: '',
-    tcbEnvId: process.env.TCB_ENV_ID || '',
+    tcrUsername: process.env.TCR_USERNAME || envFromFile['TCR_USERNAME'] || '',
+    tcbEnvId: process.env.TCB_ENV_ID || envFromFile['TCB_ENV_ID'] || '',
     // Token for temporary credentials: read from env only, never persisted to disk
     token: process.env.TCB_SESSION_TOKEN || process.env.TENCENTCLOUD_SESSION_TOKEN || undefined,
     isTemporaryCredential: !!(process.env.TCB_SESSION_TOKEN || process.env.TENCENTCLOUD_SESSION_TOKEN),
