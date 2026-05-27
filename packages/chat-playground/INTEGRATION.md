@@ -10,6 +10,8 @@
 - playground 默认从 `acpBaseUrl` 推导 observe：`/acp` 后缀替换为 `/observe`；不一致时调用方可显式配置
 - 客户端会在每个请求 URL 上追加查询参数 `?i=<method>`（仅用于 devtools 过滤，server 可忽略）
 
+> 部署适配：cloudbase 网关代理路径如 `POST /v1/aibot/bots/:botId/acp` 等也可作为 `acpBaseUrl` 直接使用。这是部署形态，不是协议规定。
+
 ## 2. 必须实现的方法
 
 | 方法 | 形态 | 必填 | 说明 |
@@ -20,6 +22,7 @@
 | `session/load` | RPC（普通）+ SSE（replay 模式）| ✅ | 加载会话；带 `replay=true` 时返回 SSE 流 |
 | `session/prompt` | SSE | ✅ | 单次对话轮次，按 `session/update` 推送增量事件 |
 | `session/cancel` | RPC（notification）| ✅ | 取消进行中的轮次 |
+| `session/delete` | RPC | ✅ | 删除会话（ACP spec 扩展，幂等） |
 
 ## 3. 通用响应
 
@@ -377,6 +380,36 @@ data: {"jsonrpc":"2.0","id":6,"result":{"stopReason":"end_turn"}}\n\n
 
 **响应**：HTTP 200/204 即可。同时 server 应中断对应 sessionId 的进行中流。
 
+### 4.7 `session/delete`（ACP spec 扩展）
+
+ACP 标准没有定义删除方法；本协议扩展用于让 playground 在列表项 hover 出现的删除按钮工作。
+
+**请求**：
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 7,
+  "method": "session/delete",
+  "params": { "sessionId": "..." }
+}
+```
+
+**响应**：
+
+```json
+{
+  "sessionId": "...",
+  "deleted": true
+}
+```
+
+行为约定：
+- `sessionId` 缺失 → `error.code: -32602`
+- session 不存在或不归属当前凭证 → 返回 `{ sessionId, deleted: false }`（**幂等，不报错**）
+- session 存在 → 删除（建议软删，便于审计）→ `{ sessionId, deleted: true }`
+- 同时清理该 session 的持久化消息（实现可异步进行）
+
 ## 5. Headers / 认证
 
 playground 默认 `credentials: 'include'`（带 cookie）；用户可在配置面板里追加任意 headers，例如：
@@ -428,6 +461,7 @@ data: <一行 JSON>\n
 - [ ] `session/load` 不带 `replay` 时 RPC 返回，带 `replay` 时 SSE 推一条 `history_page` + result + `[DONE]`
 - [ ] `session/prompt` 用 SSE 推 `agent_message_chunk` / `tool_call` / `tool_call_update` / 最终 result + `[DONE]`
 - [ ] `session/cancel` 中断当前流
+- [ ] `session/delete` 幂等删除会话
 - [ ] CORS 允许 playground 域名（含 credentials 时不能用 `*`）
 - [ ] 至少支持 cookie 或 Bearer 二者之一作为身份
 - [ ] 所有 SSE 错误以 JSON-RPC error 帧形式发出，避免 HTTP 500 让 playground 卡死
@@ -435,7 +469,7 @@ data: <一行 JSON>\n
 ## 9. 不必实现的部分
 
 playground 当前不会发起这些请求（即使你不实现也不影响联调）：
-- `GET /api/tasks/...` —— 这是 web 主应用的产品层路由
+- 任何 REST 路径（`GET /sessions` / `DELETE /sessions/:id` 等）—— 全部走 JSON-RPC 即可
 - `session/resume` —— playground 走 `session/load` 兼容
 - `available_commands_update` —— 没 UI 渲染
 - ACP `prompt` 中除 `text` / `image` 外的 content block —— 当前 UI 不构造

@@ -15,6 +15,8 @@ import {
   type SessionPromptParams,
   type SessionListParams,
   type SessionListResult,
+  type SessionDeleteParams,
+  type SessionDeleteResult,
   type AgentCallback,
   type AgentCallbackMessage,
 } from '@coder/shared'
@@ -341,6 +343,9 @@ acp.post('/acp', async (c) => {
     case 'session/list':
       return handleSessionList(c, id!, params as unknown as SessionListParams)
 
+    case 'session/delete':
+      return handleSessionDelete(c, id!, params as unknown as SessionDeleteParams)
+
     case 'session/prompt':
       return handleSessionPrompt(c, id!, params as unknown as SessionPromptParams)
 
@@ -577,6 +582,38 @@ async function handleSessionList(c: any, id: number | string, params: SessionLis
     return c.json(rpcOk(id, result))
   } catch (error) {
     console.error('[ACP] session/list failed:', error)
+    return c.json(rpcErr(id, JSON_RPC_ERRORS.INTERNAL, (error as Error).message))
+  }
+}
+
+/**
+ * session/delete — 删除会话（ACP spec 扩展）
+ *
+ * 行为：
+ * - sessionId 缺失 → INVALID_PARAMS
+ * - 不存在或不归属当前用户 → 静默成功（deleted=false），保持幂等
+ * - 存在 → 软删 task；持久化的消息记录由 GC 任务清理（与 DELETE /api/tasks/:id 行为一致）
+ */
+async function handleSessionDelete(c: any, id: number | string, params: SessionDeleteParams | undefined) {
+  const sessionId = params?.sessionId
+  if (!sessionId) {
+    return c.json(rpcErr(id, JSON_RPC_ERRORS.INVALID_PARAMS, 'sessionId is required'))
+  }
+
+  const { userId } = c.get('userEnv')!
+
+  try {
+    const task = await getDb().tasks.findById(sessionId)
+    if (!task || task.deletedAt || task.userId !== userId) {
+      const result: SessionDeleteResult = { sessionId, deleted: false }
+      return c.json(rpcOk(id, result))
+    }
+
+    await getDb().tasks.softDelete(sessionId)
+    const result: SessionDeleteResult = { sessionId, deleted: true }
+    return c.json(rpcOk(id, result))
+  } catch (error) {
+    console.error('[ACP] session/delete failed:', error)
     return c.json(rpcErr(id, JSON_RPC_ERRORS.INTERNAL, (error as Error).message))
   }
 }

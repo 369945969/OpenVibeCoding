@@ -243,6 +243,24 @@ export interface SessionListResult {
 }
 
 /**
+ * session/delete 方法参数（ACP spec 扩展）
+ *
+ * spec 没有定义 delete 方法，但允许扩展；该方法删除指定 session 及其所有持久化消息。
+ */
+export interface SessionDeleteParams {
+  sessionId: string
+}
+
+/**
+ * session/delete 方法响应
+ */
+export interface SessionDeleteResult {
+  sessionId: string
+  /** true 表示该 sessionId 之前确实存在；false 表示幂等下未做任何事 */
+  deleted: boolean
+}
+
+/**
  * ACP ContentBlock 类型
  */
 export interface AcpTextBlock {

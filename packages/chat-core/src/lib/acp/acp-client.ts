@@ -22,6 +22,8 @@
  */
 import type {
   ExtendedSessionUpdate,
+  SessionDeleteParams,
+  SessionDeleteResult,
   SessionListParams,
   SessionListResult,
   SessionNewMeta,
@@ -336,6 +338,20 @@ export class AcpClient {
     extraHeaders?: Record<string, string>,
   ): Promise<SessionNewResult> {
     return AcpClient.staticRpc<SessionNewResult>(baseUrl, 'session/new', options, extraHeaders)
+  }
+
+  /**
+   * 删除会话（ACP spec 扩展 session/delete）。
+   *
+   * 同样不绑定 taskId — 调用方在列表 UI 上直接对某一行调用。
+   * 幂等：sessionId 不存在或不归属当前用户时 server 应返回 `deleted: false`。
+   */
+  static async deleteSession(
+    baseUrl: string,
+    params: SessionDeleteParams,
+    extraHeaders?: Record<string, string>,
+  ): Promise<SessionDeleteResult> {
+    return AcpClient.staticRpc<SessionDeleteResult>(baseUrl, 'session/delete', params, extraHeaders)
   }
 
   /**

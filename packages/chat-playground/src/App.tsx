@@ -13,7 +13,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { AcpChat, AcpClient } from '@coder/chat-core'
 import type { SessionInfo } from '@coder/shared'
-import { Plus, Loader2, AlertTriangle, MessageSquare, RefreshCw, Settings as SettingsIcon, X } from 'lucide-react'
+import { Plus, Loader2, AlertTriangle, MessageSquare, RefreshCw, Settings as SettingsIcon, Trash2, X } from 'lucide-react'
 import { toast } from 'sonner'
 
 const STORAGE_KEY = 'chat-playground:config:v1'
@@ -126,6 +126,21 @@ export default function App() {
     setActiveSessionId(null) // endpoint 切了之后旧 session 不一定属于新 server
   }, [])
 
+  const handleDelete = useCallback(
+    async (sessionId: string) => {
+      if (!confirm('确定删除这个会话？此操作不可撤销。')) return
+      try {
+        await AcpClient.deleteSession(acpBaseUrl, { sessionId }, parsedHeaders)
+        if (activeSessionId === sessionId) setActiveSessionId(null)
+        await refreshSessions()
+        toast.success('会话已删除')
+      } catch (err) {
+        toast.error('删除失败: ' + (err as Error).message)
+      }
+    },
+    [acpBaseUrl, activeSessionId, parsedHeaders, refreshSessions],
+  )
+
   return (
     <div className="flex h-screen w-screen overflow-hidden bg-background text-foreground dark">
       {/* 左侧 session 列表 */}
@@ -197,6 +212,7 @@ export default function App() {
                   session={s}
                   active={s.sessionId === activeSessionId}
                   onSelect={() => setActiveSessionId(s.sessionId)}
+                  onDelete={() => handleDelete(s.sessionId)}
                 />
               ))}
             </ul>
@@ -339,16 +355,26 @@ function SettingsDialog({
 
 // ─── 列表项 ──────────────────────────────────────────────────────
 
-function SessionItem({ session, active, onSelect }: { session: SessionInfo; active: boolean; onSelect: () => void }) {
+function SessionItem({
+  session,
+  active,
+  onSelect,
+  onDelete,
+}: {
+  session: SessionInfo
+  active: boolean
+  onSelect: () => void
+  onDelete: () => void
+}) {
   const time = session.updatedAt ? new Date(session.updatedAt).toLocaleString('zh-CN', { hour12: false }) : ''
   const status = session._meta?.status as string | undefined
 
   return (
-    <li>
+    <li className="group relative">
       <button
         onClick={onSelect}
         className={
-          'w-full text-left px-3 py-2.5 hover:bg-muted/50 transition-colors border-l-2 ' +
+          'w-full text-left px-3 py-2.5 pr-8 hover:bg-muted/50 transition-colors border-l-2 ' +
           (active ? 'bg-muted border-primary' : 'border-transparent')
         }
       >
@@ -362,6 +388,16 @@ function SessionItem({ session, active, onSelect }: { session: SessionInfo; acti
           <span className="mx-1.5">·</span>
           <code className="text-[9px]">{session.sessionId.slice(0, 8)}</code>
         </div>
+      </button>
+      <button
+        onClick={(e) => {
+          e.stopPropagation()
+          onDelete()
+        }}
+        className="absolute right-2 top-1/2 -translate-y-1/2 p-1 rounded opacity-0 group-hover:opacity-100 hover:bg-destructive/20 hover:text-destructive transition-opacity"
+        title="删除会话"
+      >
+        <Trash2 className="h-3 w-3" />
       </button>
     </li>
   )
