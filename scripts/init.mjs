@@ -1161,6 +1161,7 @@ GIT_ARCHIVE_TOKEN=${getPreserved('GIT_ARCHIVE_TOKEN')}
 
 SANDBOX_IMAGE_TYPE=${get('SANDBOX_IMAGE_TYPE') || get('SCF_SANDBOX_IMAGE_TYPE', 'personal')}
 SANDBOX_IMAGE_URI=${get('SANDBOX_IMAGE_URI') || get('SCF_SANDBOX_IMAGE_URI') || get('TCR_IMAGE')}
+SANDBOX_IMAGE_REGISTRY_ID=${get('SANDBOX_IMAGE_REGISTRY_ID')}
 SANDBOX_IMAGE_ACCELERATE=${get('SANDBOX_IMAGE_ACCELERATE') || get('SCF_SANDBOX_IMAGE_ACCELERATE', 'false')}
 SANDBOX_IMAGE_PORT=${get('SANDBOX_IMAGE_PORT') || get('SCF_SANDBOX_IMAGE_PORT', '9000')}
 SANDBOX_TEST_URL=${get('SANDBOX_TEST_URL') || get('SCF_SANDBOX_TEST_URL')}
@@ -1273,20 +1274,31 @@ async function main() {
     process.exit(1)
   }
 
-  // Step 9.1: Backfill SANDBOX_IMAGE_URI into server .env
-  // (TCR step writes TCR_IMAGE to root .env.local AFTER setupServerEnv ran)
+  // Step 9.1: Backfill sandbox image config into server .env
+  // (TCR step writes root .env.local AFTER setupServerEnv ran)
   const rootEnvAfterTcr = loadEnvFile()
-  if (rootEnvAfterTcr['TCR_IMAGE']) {
-    const serverEnvFile = resolve(process.cwd(), 'packages/server/.env')
-    if (existsSync(serverEnvFile)) {
-      let content = readFileSync(serverEnvFile, 'utf-8')
-      if (content.includes('SANDBOX_IMAGE_URI=')) {
-        content = content.replace(/SANDBOX_IMAGE_URI=.*/, `SANDBOX_IMAGE_URI=${rootEnvAfterTcr['TCR_IMAGE']}`)
+  const serverEnvFile = resolve(process.cwd(), 'packages/server/.env')
+  if (existsSync(serverEnvFile)) {
+    let content = readFileSync(serverEnvFile, 'utf-8')
+    let updated = false
+
+    const setServerEnvVar = (key, value) => {
+      if (!value) return
+      if (content.includes(`${key}=`)) {
+        content = content.replace(new RegExp(`${key}=.*`), `${key}=${value}`)
       } else {
-        content += `\nSANDBOX_IMAGE_URI=${rootEnvAfterTcr['TCR_IMAGE']}\n`
+        content += `\n${key}=${value}\n`
       }
+      updated = true
+    }
+
+    setServerEnvVar('SANDBOX_IMAGE_URI', rootEnvAfterTcr['TCR_IMAGE'])
+    setServerEnvVar('SANDBOX_IMAGE_TYPE', rootEnvAfterTcr['SANDBOX_IMAGE_TYPE'])
+    setServerEnvVar('SANDBOX_IMAGE_REGISTRY_ID', rootEnvAfterTcr['SANDBOX_IMAGE_REGISTRY_ID'])
+
+    if (updated) {
       writeFileSync(serverEnvFile, content)
-      log(`已回写 SANDBOX_IMAGE_URI=${rootEnvAfterTcr['TCR_IMAGE']}`, 'success')
+      log('已回写沙箱镜像配置到 packages/server/.env', 'success')
     }
   }
 

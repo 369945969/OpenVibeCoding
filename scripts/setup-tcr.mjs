@@ -1,16 +1,18 @@
 #!/usr/bin/env node
 
 /**
- * TCR Personal Edition Setup Script
+ * TCR Setup Script
  *
- * This script initializes the Tencent Cloud Container Registry (TCR) Personal Edition
- * and pushes images to the registry. It handles:
+ * This script initializes Tencent Cloud Container Registry (TCR) Personal Edition
+ * or configures an existing TCR Enterprise Edition instance and pushes images to it.
+ * It handles:
  * 1. Automatic cloudbase CLI installation (if needed)
  * 2. Automatic cloudbase login (if needed)
  * 3. Environment variable validation and generation
- * 4. TCR Personal Edition initialization (CreateUserPersonal)
- * 5. Namespace creation with random suffix (to avoid global conflicts)
- * 6. Docker login and image push
+ * 4. TCR edition selection (Personal / Enterprise)
+ * 5. TCR Personal Edition initialization or Enterprise instance configuration
+ * 6. Namespace creation with random suffix
+ * 7. Docker login and image push
  *
  * Credentials can be obtained from:
  * - cloudbase-cli login state (temporary credentials, for local development)
@@ -32,7 +34,9 @@ const tencentcloud = require('tencentcloud-sdk-nodejs')
 
 // ===================== Constants =====================
 
-const TCR_DOMAIN = 'ccr.ccs.tencentyun.com'
+const TCR_PERSONAL_DOMAIN = 'ccr.ccs.tencentyun.com'
+const TCR_EDITION_PERSONAL = 'personal'
+const TCR_EDITION_ENTERPRISE = 'enterprise'
 
 // Resolve docker-compatible CLI: prefer docker, fallback to podman
 function resolveDockerCmd() {
@@ -151,7 +155,7 @@ function generatePassword() {
 }
 
 /**
- * Generate a 4-character random suffix for namespace
+ * Generate a 6-character random suffix for namespace
  */
 function generateNamespaceSuffix() {
   const chars = 'abcdefghijklmnopqrstuvwxyz0123456789'
@@ -160,6 +164,19 @@ function generateNamespaceSuffix() {
     suffix += chars[Math.floor(Math.random() * chars.length)]
   }
   return suffix
+}
+
+function isResourceConflict(error) {
+  const code = error?.code || ''
+  const message = error?.message || ''
+  return (
+    code === 'ResourceInUse' ||
+    code === 'FailedOperation.AlreadyExists' ||
+    code.includes('ResourceConflict') ||
+    message.includes('already') ||
+    message.includes('exist') ||
+    message.includes('ResourceConflict')
+  )
 }
 
 function loadEnvFile() {
@@ -546,7 +563,7 @@ async function createNamespaceWithSuffix(client, prefix, maxRetries = 10) {
         log('Please delete an existing namespace at: https://console.cloud.tencent.com/tcr/namespace', 'info')
         return null
       }
-      if (error.code === 'ResourceInUse' || error.code === 'FailedOperation.AlreadyExists' || error.message?.includes('already') || error.message?.includes('exist')) {
+      if (isResourceConflict(error)) {
         log(`Namespace '${namespace}' already taken globally, trying another suffix...`, 'warn')
         continue
       }
@@ -571,6 +588,151 @@ async function resetTcrPassword(_client, _password) {
   return false
 }
 
+/**
+ * List namespaces in TCR Enterprise Edition instance
+ */
+async function listNamespacesEnterprise(client, registryId, prefix) {
+  try {
+    const result = await client.DescribeNamespaces({
+      RegistryId: registryId,
+      NamespaceName: prefix || '',
+      Limit: 100,
+      Offset: 0,
+    })
+    const namespaces = result?.NamespaceList || result?.Data?.NamespaceList || []
+    return namespaces
+      .map((ns) => ns.Name || ns.NamespaceName || ns.Namespace)
+      .filter(Boolean)
+      .map((namespace) => ({ Namespace: namespace }))
+  } catch (error) {
+    log('Failed to list enterprise namespaces', 'warn')
+    return []
+  }
+}
+
+/**
+ * Find enterprise namespace by prefix
+ */
+async function findNamespaceByPrefixEnterprise(client, registryId, prefix) {
+  const namespaces = await listNamespacesEnterprise(client, registryId, prefix)
+  const found = namespaces.find((ns) => ns.Namespace.startsWith(prefix))
+  return found?.Namespace || null
+}
+
+/**
+ * Create enterprise namespace with random suffix
+ */
+async function createNamespaceEnterpriseWithSuffix(client, registryId, prefix, maxRetries = 10) {
+  for (let i = 0; i < maxRetries; i++) {
+    const suffix = generateNamespaceSuffix()
+    const namespace = `${prefix}-${suffix}`
+
+    log('Creating enterprise namespace...')
+
+    try {
+      await client.CreateNamespace({
+        RegistryId: registryId,
+        NamespaceName: namespace,
+        IsPublic: false,
+      })
+      log('Enterprise namespace created successfully', 'success')
+      return namespace
+    } catch (error) {
+      if (error.code?.startsWith('LimitExceeded')) {
+        log('Namespace limit reached', 'error')
+        log('Please delete an existing namespace in the TCR Enterprise console', 'info')
+        return null
+      }
+      if (isResourceConflict(error)) {
+        log('Enterprise namespace already exists, trying another suffix...', 'warn')
+        continue
+      }
+      log('Failed to create enterprise namespace', 'error')
+      return null
+    }
+  }
+
+  log('Failed to create enterprise namespace after multiple attempts', 'error')
+  return null
+}
+
+function extractRepositoryList(result) {
+  return (
+    result?.RepositoryList ||
+    result?.RepositoryInfoList ||
+    result?.Data?.RepositoryList ||
+    result?.Data?.RepositoryInfoList ||
+    []
+  )
+}
+
+/**
+ * Ensure repository exists in TCR Enterprise Edition
+ */
+async function ensureRepositoryEnterprise(client, registryId, namespace, repoName) {
+  try {
+    const result = await client.DescribeRepositories({
+      RegistryId: registryId,
+      NamespaceName: namespace,
+      RepositoryName: repoName,
+      Limit: 100,
+      Offset: 0,
+    })
+    const repositories = extractRepositoryList(result)
+    const found = repositories.some((repo) => {
+      const name = repo.Name || repo.RepositoryName || repo.RepoName
+      return name === repoName || name === `${namespace}/${repoName}`
+    })
+    if (found) {
+      log('Enterprise repository already exists', 'success')
+      return true
+    }
+  } catch (error) {
+    log('Failed to check enterprise repository, will try to create it', 'warn')
+  }
+
+  try {
+    await client.CreateRepository({
+      RegistryId: registryId,
+      NamespaceName: namespace,
+      RepositoryName: repoName,
+    })
+    log('Enterprise repository created successfully', 'success')
+    return true
+  } catch (error) {
+    if (isResourceConflict(error)) {
+      log('Enterprise repository already exists', 'success')
+      return true
+    }
+    log('Failed to create enterprise repository', 'error')
+    return false
+  }
+}
+
+/**
+ * Create long-term token for TCR Enterprise Edition docker login
+ */
+async function createInstanceTokenLongterm(client, registryId) {
+  try {
+    const result = await client.CreateInstanceToken({
+      RegistryId: registryId,
+      TokenType: 'longterm',
+      Desc: 'cloudbase-vibecoding',
+    })
+    const username = result?.Username || result?.Data?.Username
+    const token = result?.Token || result?.Data?.Token
+    const tokenId = result?.TokenId || result?.Data?.TokenId
+    if (!username || !token) {
+      log('TCR Enterprise token response is incomplete', 'error')
+      return null
+    }
+    return { username, token, tokenId }
+  } catch (error) {
+    log('Failed to create TCR Enterprise instance token', 'error')
+    return null
+  }
+}
+
 // ===================== Docker Functions =====================
 
 function checkDocker() {
@@ -587,7 +749,8 @@ function dockerLoginOnce(domain, username, password) {
   }
 }
 
-async function dockerLogin(domain, username, password) {
+async function dockerLogin(domain, username, password, options = {}) {
+  const { allowPromptRetry = true, enterprise = false } = options
   if (!DOCKER_CMD) {
     log('Docker / Podman 未安装或未运行', 'error')
     return { success: false, username, password }
@@ -599,13 +762,21 @@ async function dockerLogin(domain, username, password) {
     return { success: true, username, password }
   }
 
-  // Login failed — username or password may be wrong
   log('Login failed', 'error')
+  if (!allowPromptRetry) {
+    return { success: false, username, password }
+  }
+
   console.log('')
   console.log('  TCR 登录失败，可能原因：')
-  console.log('  1. 密码不正确（可前往控制台重置：https://console.cloud.tencent.com/tcr/?rid=1）')
-  console.log('  2. 用户名不正确（主账号用 AppID，子账号用子账号 UIN）')
-  console.log('     如果是子账号重置了 TCR 密码，请输入该子账号的腾讯云 UIN 作为用户名')
+  if (enterprise) {
+    console.log('  1. 密码或 token 不正确')
+    console.log('  2. 企业版用户名不正确（请使用实例登录用户名或 token 返回的 Username）')
+  } else {
+    console.log('  1. 密码不正确（可前往控制台重置：https://console.cloud.tencent.com/tcr/?rid=1）')
+    console.log('  2. 用户名不正确（主账号用 AppID，子账号用子账号 UIN）')
+    console.log('     如果是子账号重置了 TCR 密码，请输入该子账号的腾讯云 UIN 作为用户名')
+  }
   console.log(`  当前使用的用户名：${username}`)
   console.log('')
 
@@ -618,7 +789,7 @@ async function dockerLogin(domain, username, password) {
 
     if (dockerLoginOnce(domain, finalUsername, newPassword)) {
       log('Login successful', 'success')
-      saveEnvVar('TCR_USERNAME', finalUsername)
+      saveEnvVar(enterprise ? 'TCR_DOCKER_USERNAME' : 'TCR_USERNAME', finalUsername)
       saveEnvVar('TCR_PASSWORD', newPassword)
       log('用户名和密码已保存到 .env.local', 'info')
       return { success: true, username: finalUsername, password: newPassword }
@@ -879,17 +1050,47 @@ function generateSecrets() {
   }
 }
 
-async function setupTcr(config) {
-  // Step 0: Check Docker before doing anything else
-  if (!checkDocker()) {
-    log('Docker daemon is not running or not installed', 'error')
-    log('Please start Docker and retry:', 'info')
-    log('  colima start', 'info')
-    log('  # or open Docker Desktop', 'info')
+async function dockerTagAndPush(config, options) {
+  const {
+    domain,
+    namespace,
+    repoName,
+    tag,
+    localImage,
+  } = options
+
+  log('Checking for local image...')
+  try {
+    runCommand(`${DOCKER_CMD} inspect ${localImage}`, true)
+    log('Local image found, skipping pull', 'success')
+  } catch {
+    log('Local image not found locally, pulling from registry...')
+    if (!pullImage(localImage)) {
+      log(`Cannot pull image. Make sure ${DOCKER_CMD} can reach ghcr.io, or pull manually:`, 'error')
+      console.log(`  ${DOCKER_CMD} pull ${localImage}`)
+      return false
+    }
+  }
+
+  const fullImage = `${domain}/${namespace}/${repoName}:${tag}`
+  if (!tagImage(localImage, fullImage)) {
     return false
   }
 
-  const client = createTcrClient(config.secretId, config.secretKey, config.region, config.token)
+  if (!pushImage(fullImage)) {
+    return false
+  }
+
+  saveEnvVar('TCR_IMAGE', fullImage)
+  log('Image reference saved', 'info')
+  config.namespace = namespace
+  config.fullImage = fullImage
+  config.registryDomain = domain
+  return true
+}
+
+async function setupTcrPersonal(config) {
+  const client = createTcrClient(config.secretId, config.secretKey, 'ap-guangzhou', config.token)
 
   // Step 1: Check if TCR user already exists
   const env = loadEnvFile()
@@ -971,6 +1172,7 @@ async function setupTcr(config) {
 
   // Save TCR password
   saveEnvVar('TCR_PASSWORD', password)
+  saveEnvVar('SANDBOX_IMAGE_TYPE', 'personal')
   log('TCR password saved to .env.local', 'info')
 
   // Step 3: Find or create namespace
@@ -1022,69 +1224,181 @@ async function setupTcr(config) {
   // 优先用 .env.local 里保存的 TCR_USERNAME，避免主/子账号混淆
   // 否则用 callerUin（子账号 UIN）或 accountId（主账号 AppID）推断
   let dockerUsername = config.tcrUsername || config.callerUin || config.accountId
-  const loginResult = await dockerLogin(TCR_DOMAIN, dockerUsername, password)
+  const loginResult = await dockerLogin(TCR_PERSONAL_DOMAIN, dockerUsername, password)
   if (!loginResult.success) {
-    log('Docker 登录失败，可能是用户名不正确', 'warn')
+    return false
+  }
+  dockerUsername = loginResult.username
+  password = loginResult.password
+
+  return dockerTagAndPush(config, {
+    domain: TCR_PERSONAL_DOMAIN,
+    namespace,
+    repoName: config.repoName,
+    tag: config.tag,
+    localImage: config.localImage,
+  })
+}
+
+async function setupTcrEnterprise(config) {
+  const env = loadEnvFile()
+
+  let registryId = config.registryId || process.env.SANDBOX_IMAGE_REGISTRY_ID || env['SANDBOX_IMAGE_REGISTRY_ID'] || ''
+  if (!registryId) {
     console.log('')
-    console.log(`  当前用户名：${dockerUsername}`)
-    console.log('  如果是子账号，用户名应为子账号 Uin（非主账号 AppID）')
-    console.log('  可在控制台「账号信息」页面查看：https://console.cloud.tencent.com/developer')
+    console.log('  请输入 TCR 企业版实例 RegistryId。')
+    console.log('  可在 TCR 企业版实例详情页查看。')
     console.log('')
-    const retryUsername = await promptInput('请输入正确的用户名（回车跳过）')
-    if (!retryUsername) {
+    registryId = await promptInput('RegistryId')
+    if (!registryId) {
+      log('RegistryId 为必填项', 'error')
       return false
     }
-    dockerUsername = retryUsername.trim()
-    if (!(await dockerLogin(TCR_DOMAIN, dockerUsername, password)).success) {
+  }
+  registryId = registryId.trim()
+  config.registryId = registryId
+  saveEnvVar('SANDBOX_IMAGE_REGISTRY_ID', registryId)
+
+  let registryDomain = config.registryDomain || process.env.TCR_DOMAIN || env['TCR_DOMAIN'] || ''
+  if (!registryDomain) {
+    registryDomain = await promptInput('TCR 企业版实例域名（例如 xxx.tencentcloudcr.com）')
+    if (!registryDomain) {
+      log('TCR 企业版实例域名为必填项', 'error')
+      return false
+    }
+  }
+  registryDomain = registryDomain.trim().replace(/^https?:\/\//, '').replace(/\/$/, '')
+  if (!registryDomain.endsWith('.tencentcloudcr.com')) {
+    log('TCR 企业版实例域名格式不正确', 'error')
+    return false
+  }
+  config.registryDomain = registryDomain
+  saveEnvVar('TCR_DOMAIN', registryDomain)
+
+  let region = config.region || process.env.TCR_REGION || env['TCR_REGION'] || ''
+  if (!region) {
+    region = await promptInput('TCR 企业版实例地域（默认 ap-guangzhou）')
+  }
+  region = (region || 'ap-guangzhou').trim()
+  config.region = region
+  saveEnvVar('TCR_REGION', region)
+
+  const client = createTcrClient(config.secretId, config.secretKey, region, config.token)
+
+  const hasProvidedPassword = !!config.password
+  let password = config.password || env['TCR_PASSWORD'] || ''
+  let dockerUsername = config.dockerUsername || process.env.TCR_DOCKER_USERNAME || env['TCR_DOCKER_USERNAME'] || ''
+
+  if (password && dockerUsername) {
+    const useSaved = await askYesNo('检测到已保存的 TCR 登录凭证，是否使用？', true)
+    if (!useSaved) {
+      password = ''
+      dockerUsername = ''
+    }
+  } else if (password && !hasProvidedPassword) {
+    password = ''
+  }
+
+  if (!password) {
+    console.log('')
+    console.log('━━━ TCR 企业版登录方式 ━━━')
+    console.log('')
+    console.log('  1) 输入实例登录密码（默认）')
+    console.log('  2) 自动生成 longterm token')
+    console.log('')
+    const loginChoice = await promptInput('请选择（1 或 2，默认 1）')
+
+    if (loginChoice === '2') {
+      const tokenResult = await createInstanceTokenLongterm(client, registryId)
+      if (!tokenResult) {
+        return false
+      }
+      dockerUsername = tokenResult.username
+      password = tokenResult.token
+      saveEnvVar('TCR_DOCKER_USERNAME', dockerUsername)
+      saveEnvVar('TCR_PASSWORD', password)
+      if (tokenResult.tokenId) {
+        saveEnvVar('TCR_TOKEN_ID', tokenResult.tokenId)
+      }
+      log('TCR Enterprise longterm token generated', 'success')
+    } else {
+      dockerUsername = dockerUsername || (await promptInput('请输入 TCR 企业版 Docker 登录用户名（通常为主账号 UIN）'))
+      if (!dockerUsername) {
+        log('Docker 登录用户名为必填项', 'error')
+        return false
+      }
+      password = await promptInput('请输入 TCR 企业版实例登录密码', true)
+      if (!password) {
+        log('密码为必填项', 'error')
+        return false
+      }
+      saveEnvVar('TCR_DOCKER_USERNAME', dockerUsername.trim())
+      saveEnvVar('TCR_PASSWORD', password)
+    }
+  }
+
+  if (!dockerUsername) {
+    dockerUsername = await promptInput('请输入 TCR 企业版 Docker 登录用户名')
+    if (!dockerUsername) {
+      log('Docker 登录用户名为必填项', 'error')
+      return false
+    }
+    saveEnvVar('TCR_DOCKER_USERNAME', dockerUsername.trim())
+  }
+  dockerUsername = dockerUsername.trim()
+
+  log('Looking for existing enterprise namespace...')
+  let namespace = await findNamespaceByPrefixEnterprise(client, registryId, config.namespacePrefix)
+
+  if (namespace) {
+    log('Found existing enterprise namespace', 'success')
+  } else {
+    log('No existing enterprise namespace found', 'info')
+    namespace = await createNamespaceEnterpriseWithSuffix(client, registryId, config.namespacePrefix)
+    if (!namespace) {
       return false
     }
   }
 
-  // Step 6 (was 5): Check local image, pull only if not present
-  log(`Checking for local image '${config.localImage}'...`)
-  try {
-    runCommand(`${DOCKER_CMD} inspect ${config.localImage}`, true)
-    log('Local image found, skipping pull', 'success')
-  } catch {
-    log('Local image not found locally, pulling from registry...')
-    if (!pullImage(config.localImage)) {
-      log(`Cannot pull image. Make sure ${DOCKER_CMD} can reach ghcr.io, or pull manually:`, 'error')
-      log(`  ${DOCKER_CMD} pull ${config.localImage}`, 'info')
-      return false
-    }
-  }
+  config.namespace = namespace
+  saveEnvVar('TCR_NAMESPACE', namespace)
+  log('Namespace saved to .env.local', 'info')
 
-  // Step 7 (was 6): Tag image
-  const fullImage = `${TCR_DOMAIN}/${config.namespace}/${config.repoName}:${config.tag}`
-  if (!tagImage(config.localImage, fullImage)) {
+  if (!(await ensureRepositoryEnterprise(client, registryId, namespace, config.repoName))) {
     return false
   }
 
-  // Step 8 (was 7): Push image (retry with manual username if first attempt fails)
-  if (!pushImage(fullImage)) {
-    log('推送失败，可能是 Docker 登录用户名不正确', 'warn')
-    console.log('')
-    console.log(`  当前用户名：${dockerUsername}`)
-    console.log('  如果是子账号，用户名应为子账号 Uin（非主账号 AppID）')
-    console.log('  可在控制台「账号信息」页面查看：https://console.cloud.tencent.com/developer')
-    console.log('')
-    const retryUsername = await promptInput('请输入正确的用户名（回车跳过）')
-    if (!retryUsername) {
-      return false
-    }
-    if (!dockerLogin(TCR_DOMAIN, retryUsername.trim(), password)) {
-      return false
-    }
-    if (!pushImage(fullImage)) {
-      return false
-    }
+  const loginResult = await dockerLogin(registryDomain, dockerUsername, password, {
+    allowPromptRetry: false,
+    enterprise: true,
+  })
+  if (!loginResult.success) {
+    return false
   }
 
-  // Save image reference
-  saveEnvVar('TCR_IMAGE', fullImage)
-  log('Image reference saved', 'info')
+  saveEnvVar('SANDBOX_IMAGE_TYPE', 'enterprise')
 
-  return true
+  return dockerTagAndPush(config, {
+    domain: registryDomain,
+    namespace,
+    repoName: config.repoName,
+    tag: config.tag,
+    localImage: config.localImage,
+  })
+}
+
+async function setupTcr(config) {
+  // Step 0: Check Docker before doing anything else
+  if (!checkDocker()) {
+    log('Docker / Podman is not running or not installed', 'error')
+    log('Please start Docker Desktop, colima, or podman machine and retry.', 'info')
+    return false
+  }
+
+  if (config.edition === TCR_EDITION_ENTERPRISE) {
+    return setupTcrEnterprise(config)
+  }
+  return setupTcrPersonal(config)
 }
 
 // ===================== CloudBase Env Selection =====================
@@ -1173,10 +1487,38 @@ async function selectTcbEnv(config) {
   }
 }
 
+function normalizeTcrEdition(value) {
+  const normalized = String(value || '').trim().toLowerCase()
+  if (normalized === TCR_EDITION_PERSONAL || normalized === '1') return TCR_EDITION_PERSONAL
+  if (normalized === TCR_EDITION_ENTERPRISE || normalized === '2') return TCR_EDITION_ENTERPRISE
+  return ''
+}
+
+async function selectTcrEdition(config, env) {
+  let edition = normalizeTcrEdition(config.edition || process.env.TCR_EDITION || env['TCR_EDITION'])
+
+  while (!edition) {
+    console.log('')
+    console.log('━━━ TCR 版本选择 ━━━')
+    console.log('')
+    console.log('  1) 个人版（免费、限广州、命名空间全局唯一）')
+    console.log('  2) 企业版（需已购实例、按实例独立域名）')
+    console.log('')
+    edition = normalizeTcrEdition(await promptInput('请选择 TCR 版本（1 或 2，默认 1）') || '1')
+  }
+
+  config.edition = edition
+  saveEnvVar('TCR_EDITION', edition)
+  if (edition === TCR_EDITION_PERSONAL && !config.region) {
+    config.region = 'ap-guangzhou'
+  }
+  return edition
+}
+
 // ===================== Main =====================
 
 async function main() {
-  console.log('\n🔧 TCR 个人版配置脚本\n')
+  console.log('\n🔧 TCR 配置脚本\n')
 
   // Parse command line arguments
   const args = process.argv.slice(2)
@@ -1191,7 +1533,11 @@ async function main() {
     // Token for temporary credentials: read from env only, never persisted to disk
     token: process.env.TCB_SESSION_TOKEN || process.env.TENCENTCLOUD_SESSION_TOKEN || undefined,
     isTemporaryCredential: !!(process.env.TCB_SESSION_TOKEN || process.env.TENCENTCLOUD_SESSION_TOKEN),
-    region: 'ap-guangzhou', // Personal edition only supports Guangzhou
+    edition: process.env.TCR_EDITION || '',
+    registryId: process.env.SANDBOX_IMAGE_REGISTRY_ID || '',
+    registryDomain: process.env.TCR_DOMAIN || '',
+    dockerUsername: process.env.TCR_DOCKER_USERNAME || '',
+    region: process.env.TCR_REGION || '',
     namespace: '',
     namespacePrefix: DEFAULT_NAMESPACE_PREFIX,
     visibility: 'private',
@@ -1214,6 +1560,18 @@ async function main() {
         break
       case '--account-id':
         config.accountId = args[++i]
+        break
+      case '--edition':
+        config.edition = args[++i]
+        break
+      case '--registry-id':
+        config.registryId = args[++i]
+        break
+      case '--registry-domain':
+        config.registryDomain = args[++i]
+        break
+      case '--region':
+        config.region = args[++i]
         break
       case '--namespace':
         config.namespacePrefix = args[++i]
@@ -1245,20 +1603,25 @@ Options:
   --secret-id <id>        Tencent Cloud Secret ID (optional if cloudbase login)
   --secret-key <key>      Tencent Cloud Secret Key (optional if cloudbase login)
   --account-id <id>       Tencent Cloud Account ID (optional if cloudbase login)
+  --edition <type>        TCR edition: personal or enterprise
+  --registry-id <id>      TCR Enterprise RegistryId
+  --registry-domain <dom> TCR Enterprise registry domain (xxx.tencentcloudcr.com)
+  --region <region>       TCR Enterprise region (default: ap-guangzhou)
   --namespace <prefix>    TCR namespace prefix (default: ${DEFAULT_NAMESPACE_PREFIX})
-                          A 4-char random suffix will be added automatically
+                          A 6-char random suffix will be added automatically
   --visibility <type>     Namespace visibility: private (default) or public
   --local-image <image>   Local Docker image to push (default: ${GHCR_IMAGE_URL})
   --repo-name <name>      Repository name in TCR (default: sandbox)
   --tag <tag>             Image tag (default: latest)
-  --password <pwd>        TCR login password
+  --password <pwd>        TCR login password or enterprise token
   --skip-cloudbase-login  Skip automatic cloudbase login
   --help, -h              Show this help message
 
 Namespace Behavior:
-  - Namespace is globally unique across all TCR Personal Edition users
+  - Personal Edition namespace is globally unique across all users
+  - Enterprise Edition namespace is unique within the selected instance
   - Script will first search for existing namespace with the given prefix
-  - If not found, creates a new one with random 4-char suffix (e.g., prefix-a1b2)
+  - If not found, creates a new one with random suffix (e.g., prefix-a1b2c3)
   - Namespace is saved to .env.local for future use
 
 Credential Sources (in order of priority):
@@ -1267,9 +1630,14 @@ Credential Sources (in order of priority):
   3. cloudbase-cli login state (automatic installation and login if needed)
 
 Image Configuration from .env.local:
+  TCR_EDITION        TCR edition: personal or enterprise
   TCR_LOCAL_IMAGE    Local Docker image to push (default: ${GHCR_IMAGE_URL})
   TCR_REPO_NAME      Repository name in TCR (default: sandbox)
   TCR_TAG            Image tag (default: latest)
+  SANDBOX_IMAGE_REGISTRY_ID    TCR Enterprise RegistryId
+  TCR_DOMAIN         TCR Enterprise registry domain
+  TCR_REGION         TCR Enterprise region
+  TCR_DOCKER_USERNAME Docker login username for TCR Enterprise
 
 Examples:
   # Simple usage (will auto-install cloudbase and login if needed)
@@ -1290,10 +1658,19 @@ Examples:
     --local-image node:20 \\
     --repo-name my-app \\
     --tag v1.0.0
+
+  # TCR Enterprise Edition
+  node scripts/setup-tcr.mjs \\
+    --edition enterprise \\
+    --registry-id tcr-xxxxxxxx \\
+    --registry-domain xxx.tencentcloudcr.com \\
+    --region ap-guangzhou
 `)
         process.exit(0)
     }
   }
+
+  await selectTcrEdition(config, env)
 
   // Apply env defaults for image config (CLI args take priority)
   if (config.localImage === GHCR_IMAGE_URL) {
@@ -1350,7 +1727,7 @@ Examples:
   if (success) {
     console.log('\n✅ 配置完成！\n')
     console.log('Your image is available at:')
-    console.log(`  ${TCR_DOMAIN}/${config.namespace}/${config.repoName}:${config.tag}\n`)
+    console.log(`  ${config.fullImage}\n`)
     console.log('Environment variables have been saved to .env.local')
 
     // SCF 角色授权提示
