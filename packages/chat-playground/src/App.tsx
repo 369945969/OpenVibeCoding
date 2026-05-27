@@ -13,7 +13,16 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { AcpChat, AcpClient } from '@coder/chat-core'
 import type { SessionInfo } from '@coder/shared'
-import { Plus, Loader2, AlertTriangle, MessageSquare, RefreshCw, Settings as SettingsIcon, Trash2, X } from 'lucide-react'
+import {
+  Plus,
+  Loader2,
+  AlertTriangle,
+  MessageSquare,
+  RefreshCw,
+  Settings as SettingsIcon,
+  Trash2,
+  X,
+} from 'lucide-react'
 import { toast } from 'sonner'
 
 const STORAGE_KEY = 'chat-playground:config:v1'
