@@ -466,7 +466,14 @@ export async function provisionUserResources(
       const mainEnvId = process.env.TCB_ENV_ID
       const domains = ['localhost:5173']
       if (mainEnvId) {
-        domains.push(`${mainEnvId}.ap-shanghai.app.tcloudbase.com`)
+        let defaultDomain: string
+        try {
+          const gwRes = await (tcbClient as any).DescribeCloudBaseGWService({ EnvId: mainEnvId })
+          defaultDomain = gwRes.DefaultDomain || `${mainEnvId}.${process.env.TCB_REGION || 'ap-shanghai'}.app.tcloudbase.com`
+        } catch {
+          defaultDomain = `${mainEnvId}.${process.env.TCB_REGION || 'ap-shanghai'}.app.tcloudbase.com`
+        }
+        domains.push(defaultDomain)
       }
       console.log('[provision] Adding security domains:', domains.join(', '))
       await (tcbClient as any).CreateAuthDomain({
