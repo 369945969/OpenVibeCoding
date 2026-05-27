@@ -464,16 +464,14 @@ export async function provisionUserResources(
     // ─── 步骤 4.5：添加安全域名 ──────────────────────────────────
     try {
       const mainEnvId = process.env.TCB_ENV_ID
-      const domains = ['localhost:5173']
+      const domains = ['localhost:5174']
       if (mainEnvId) {
         let defaultDomain: string
         try {
           const gwRes = await (tcbClient as any).DescribeCloudBaseGWService({ EnvId: mainEnvId })
-          defaultDomain = gwRes.DefaultDomain || `${mainEnvId}.${process.env.TCB_REGION || 'ap-shanghai'}.app.tcloudbase.com`
-        } catch {
-          defaultDomain = `${mainEnvId}.${process.env.TCB_REGION || 'ap-shanghai'}.app.tcloudbase.com`
-        }
-        domains.push(defaultDomain)
+          defaultDomain = gwRes.DefaultDomain
+          domains.push(defaultDomain)
+        } catch {}
       }
       console.log('[provision] Adding security domains:', domains.join(', '))
       await (tcbClient as any).CreateAuthDomain({
