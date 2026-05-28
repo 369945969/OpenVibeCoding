@@ -5,7 +5,11 @@ import bcrypt from 'bcryptjs'
 import { nanoid } from 'nanoid'
 import { encryptJWE } from '../lib/session'
 import { requireAuth, type AppEnv, type AppSession } from '../middleware/auth'
-import { provisionUserResources, rollbackProvisionedResources, ensureSharedEnvAuthDomains } from '../cloudbase/provision.js'
+import {
+  provisionUserResources,
+  rollbackProvisionedResources,
+  ensureSharedEnvAuthDomains,
+} from '../cloudbase/provision.js'
 import { acquireEnv } from '../cloudbase/env-lifecycle.js'
 
 const SESSION_COOKIE_NAME = 'nex_session'

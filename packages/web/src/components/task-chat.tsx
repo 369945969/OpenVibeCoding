@@ -549,7 +549,10 @@ export function TaskChat({
       }),
     )
 
-    chatAnswerQuestion(askData).then(() => fetchMessages(false))
+    // 不在此处调用 fetchMessages：SSE 流已经把所有 chunk/tool_call apply 到本地 state，
+    // 而服务端 syncMessages 在 SSE [DONE] 之后才异步落 DB，过早 fetchMessages 会用陈旧 DB
+    // 状态覆盖本地最新内容（用户表现为"答完后没有新消息出现"）。
+    chatAnswerQuestion(askData)
   }
 
   const handleConfirmTool = (action: PermissionAction) => {

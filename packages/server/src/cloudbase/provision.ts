@@ -583,7 +583,11 @@ export async function ensureSharedEnvAuthDomains(): Promise<void> {
     const { tcbClient } = getClients()
     let defaultDomain = `${envId}.service.tcloudbase.com`
     try {
-      const gwRes = await (tcbClient as any).DescribeCloudBaseGWService({ EnableRegion: true, EnableUnion: true, ServiceId: envId })
+      const gwRes = await (tcbClient as any).DescribeCloudBaseGWService({
+        EnableRegion: true,
+        EnableUnion: true,
+        ServiceId: envId,
+      })
       if (gwRes.DefaultDomain) defaultDomain = gwRes.DefaultDomain
     } catch {
       // fallback to concatenated domain
