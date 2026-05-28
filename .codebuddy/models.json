@@ -1,0 +1,11 @@
+{
+  "models": [
+    {
+        "id": "mimo-v2.5-pro",
+        "name": "mimo-v2.5-pro",
+        "vendor": "custom",
+        "url": "https://token-plan-sgp.xiaomimimo.com/v1",
+        "apiKey": "tp-sk55ibh59r6h1gu2oubb8ybumhzw8tub3u2lvhjoacu7hgzi"
+    }
+  ]
+}

@@ -170,19 +170,30 @@ export class ScfSandboxManager {
   private cachedAccessToken: { token: string; expiry: number } | null = null
 
   private getEnvConfig() {
+    const imageType = process.env.SANDBOX_IMAGE_TYPE || process.env.SCF_SANDBOX_IMAGE_TYPE || 'personal'
+    const imageConfig: Record<string, string | boolean | number> = {
+      ImageType: imageType,
+      ImageUri: process.env.SANDBOX_IMAGE_URI || process.env.SCF_SANDBOX_IMAGE_URI || '',
+      ContainerImageAccelerate:
+        (process.env.SANDBOX_IMAGE_ACCELERATE || process.env.SCF_SANDBOX_IMAGE_ACCELERATE) === 'true',
+      ImagePort: parseInt(process.env.SANDBOX_IMAGE_PORT || process.env.SCF_SANDBOX_IMAGE_PORT || '9000', 10),
+    }
+
+    if (imageType === 'enterprise') {
+      const registryId = process.env.SANDBOX_IMAGE_REGISTRY_ID || ''
+      if (!registryId) {
+        throw new Error('Missing SANDBOX_IMAGE_REGISTRY_ID for enterprise sandbox image')
+      }
+      imageConfig.RegistryId = registryId
+    }
+
     return {
       envId: process.env.TCB_ENV_ID || '',
       secretId: process.env.TCB_SECRET_ID || '',
       secretKey: process.env.TCB_SECRET_KEY || '',
       token: process.env.TCB_TOKEN || '',
       functionPrefix: process.env.SANDBOX_FUNCTION_PREFIX || process.env.SCF_SANDBOX_FUNCTION_PREFIX || 'sandbox',
-      imageConfig: {
-        ImageType: process.env.SANDBOX_IMAGE_TYPE || process.env.SCF_SANDBOX_IMAGE_TYPE || 'personal',
-        ImageUri: process.env.SANDBOX_IMAGE_URI || process.env.SCF_SANDBOX_IMAGE_URI || '',
-        ContainerImageAccelerate:
-          (process.env.SANDBOX_IMAGE_ACCELERATE || process.env.SCF_SANDBOX_IMAGE_ACCELERATE) === 'true',
-        ImagePort: parseInt(process.env.SANDBOX_IMAGE_PORT || process.env.SCF_SANDBOX_IMAGE_PORT || '9000', 10),
-      },
+      imageConfig,
     }
   }
 
