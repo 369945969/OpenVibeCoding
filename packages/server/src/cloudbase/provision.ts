@@ -571,6 +571,30 @@ export async function ensureAuthDomains(envId: string, domains: string[]): Promi
 }
 
 /**
+ * 为 shared 模式的主环境添加安全域名（localhost + DefaultDomain）。
+ * 使用 DescribeCloudBaseGWService 获取 DefaultDomain，保证域名格式正确。
+ * 非关键操作，失败不影响注册流程。
+ */
+export async function ensureSharedEnvAuthDomains(): Promise<void> {
+  const envId = process.env.TCB_ENV_ID
+  if (!envId) return
+
+  try {
+    const { tcbClient } = getClients()
+    let defaultDomain = `${envId}.service.tcloudbase.com`
+    try {
+      const gwRes = await (tcbClient as any).DescribeCloudBaseGWService({ EnableRegion: true, EnableUnion: true, ServiceId: envId })
+      if (gwRes.DefaultDomain) defaultDomain = gwRes.DefaultDomain
+    } catch {
+      // fallback to concatenated domain
+    }
+    await ensureAuthDomains(envId, ['localhost:5173', defaultDomain])
+  } catch {
+    // non-critical
+  }
+}
+
+/**
  * 回滚 provisionUserResources 创建的腾讯云资源（注册失败时使用）
  * 不销毁环境，仅清理 CAM 资源和 Tag
  */

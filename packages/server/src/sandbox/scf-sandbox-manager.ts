@@ -175,12 +175,13 @@ export class ScfSandboxManager {
    * 缓存 1 小时，替代所有 `${envId}.ap-shanghai.app.tcloudbase.com` 硬拼接。
    */
   async getDefaultDomain(): Promise<string> {
+    const envConfig = this.getEnvConfig()
+    return `${envConfig.envId}.service.tcloudbase.com`
     const now = Date.now()
     if (this.cachedDefaultDomain && this.cachedDefaultDomain.expiry > now) {
       return this.cachedDefaultDomain.domain
     }
 
-    const envConfig = this.getEnvConfig()
     const app = new CloudBase({
       secretId: envConfig.secretId,
       secretKey: envConfig.secretKey,
