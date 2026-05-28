@@ -296,7 +296,7 @@ tasksRouter.get('/', async (c) => {
   const parsedTasks = userTasks.map((t) => ({
     ...t,
     logs: t.logs ? JSON.parse(t.logs) : [],
-    mcpServerIds: t.mcpServerIds ? JSON.parse(t.mcpServerIds) : null,
+    mcpServerList: t.mcpServerList ? JSON.parse(t.mcpServerList) : null,
   }))
   return c.json({ tasks: parsedTasks })
 })
@@ -318,6 +318,7 @@ tasksRouter.post('/', async (c) => {
     maxDuration = 300,
     keepAlive = false,
     enableBrowser = false,
+    mcpServerList,
   } = body
   if (!prompt || typeof prompt !== 'string') return c.json({ error: 'prompt is required' }, 400)
 
@@ -479,14 +480,14 @@ tasksRouter.post('/', async (c) => {
     prNumber: null,
     prStatus: null,
     prMergeCommitSha: null,
-    mcpServerIds: null,
+    mcpServerList: mcpServerList ? JSON.stringify(mcpServerList) : null,
     personalGitInfo: null,
     createdAt: now,
     updatedAt: now,
   })
 
   const newTask = await getDb().tasks.findById(taskId)
-  return c.json({ task: { ...newTask, logs: [], mcpServerIds: null } })
+  return c.json({ task: { ...newTask, logs: [], mcpServerList: null } })
 })
 
 // Get single task
@@ -501,7 +502,7 @@ tasksRouter.get('/:taskId', async (c) => {
     task: {
       ...task,
       logs: task.logs ? JSON.parse(task.logs) : [],
-      mcpServerIds: task.mcpServerIds ? JSON.parse(task.mcpServerIds) : null,
+      mcpServerList: task.mcpServerList ? JSON.parse(task.mcpServerList) : null,
     },
   })
 })
@@ -524,6 +525,32 @@ tasksRouter.patch('/:taskId', async (c) => {
     const updated = await getDb().tasks.findById(taskId)
     return c.json({ message: 'Task stopped', task: updated })
   }
+
+  if (body.action === 'update-mcp-servers') {
+    const mcpServerList = Array.isArray(body.mcpServerList)
+      ? body.mcpServerList.map((server) => ({
+          name: server?.name,
+          description: server?.description ?? null,
+          type: server?.type,
+          baseUrl: server?.baseUrl ?? null,
+          headers: server?.headers ?? null,
+        }))
+      : null
+    await getDb().tasks.update(taskId, {
+      mcpServerList: mcpServerList ? JSON.stringify(mcpServerList) : null,
+      updatedAt: Date.now(),
+    })
+    const updated = await getDb().tasks.findById(taskId)
+    return c.json({
+      message: 'MCP servers updated',
+      task: {
+        ...updated,
+        logs: updated?.logs ? JSON.parse(updated.logs) : [],
+        mcpServerList: updated?.mcpServerList ? JSON.parse(updated.mcpServerList) : null,
+      },
+    })
+  }
+
   return c.json({ error: 'Invalid action' }, 400)
 })
 

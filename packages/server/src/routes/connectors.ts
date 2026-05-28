@@ -20,6 +20,7 @@ app.get('/', async (c) => {
       ...connector,
       oauthClientSecret: connector.oauthClientSecret ? decrypt(connector.oauthClientSecret) : null,
       env: connector.env ? JSON.parse(decrypt(connector.env)) : null,
+      headers: connector.headers ? JSON.parse(decrypt(connector.headers)) : null,
     }))
 
     return c.json({
@@ -60,6 +61,7 @@ app.post('/', async (c) => {
       oauthClientSecret: body.oauthClientSecret?.trim() || undefined,
       command: body.command?.trim() || undefined,
       env: body.env,
+      headers: body.headers,
       status: 'connected' as const,
     }
 
@@ -74,6 +76,7 @@ app.post('/', async (c) => {
       oauthClientSecret: connectorData.oauthClientSecret ? encrypt(connectorData.oauthClientSecret) : null,
       command: connectorData.command || null,
       env: connectorData.env ? encrypt(JSON.stringify(connectorData.env)) : null,
+      headers: connectorData.headers ? encrypt(JSON.stringify(connectorData.headers)) : null,
       status: connectorData.status,
     })
 
@@ -115,6 +118,7 @@ app.patch('/:id', async (c) => {
       oauthClientSecret: body.oauthClientSecret?.trim() || undefined,
       command: body.command?.trim() || undefined,
       env: body.env,
+      headers: body.headers,
       status: body.status || 'connected',
     }
 
@@ -129,6 +133,7 @@ app.patch('/:id', async (c) => {
       oauthClientSecret: validatedData.oauthClientSecret ? encrypt(validatedData.oauthClientSecret) : null,
       command: validatedData.command || null,
       env: validatedData.env ? encrypt(JSON.stringify(validatedData.env)) : null,
+      headers: validatedData.headers ? encrypt(JSON.stringify(validatedData.headers)) : null,
       status: validatedData.status as 'connected' | 'disconnected',
       updatedAt: Date.now(),
     })

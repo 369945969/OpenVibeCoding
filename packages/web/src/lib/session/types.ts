@@ -17,12 +17,13 @@ export interface Connector {
   userId: string
   name: string
   description?: string | null
-  type: 'local' | 'remote'
+  type: 'HTTP' | 'SSE' | 'STDIO'
   baseUrl?: string | null
   oauthClientId?: string | null
   oauthClientSecret?: string | null
   command?: string | null
   env?: Record<string, string> | null
+  headers?: Record<string, string> | null
   status: 'connected' | 'disconnected'
   createdAt: number
   updatedAt: number

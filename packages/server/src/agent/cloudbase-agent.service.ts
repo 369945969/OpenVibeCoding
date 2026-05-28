@@ -507,11 +507,12 @@ export class CloudbaseAgentService {
 
     const userContext = { envId: envId || '', userId: userId || 'anonymous' }
 
+    const taskRecord = await getDb().tasks.findById(conversationId)
     // Read sandbox config from task record (written at creation time)
     // Historical tasks missing these fields are backfilled as 'shared' mode
     let sandboxConfig: ReturnType<typeof resolveSandboxConfig> | null = null
     try {
-      const taskRecord = await getDb().tasks.findById(conversationId)
+      // const taskRecord = await getDb().tasks.findById(conversationId)
       await backfillSandboxConfig(
         conversationId,
         {
@@ -898,7 +899,7 @@ export class CloudbaseAgentService {
     // server 端只需写 previewUrl 信号，让前端触发 preview-url SSE
     if (isCodingMode && sandboxInstance) {
       try {
-        const taskRecord = await getDb().tasks.findById(conversationId)
+        // const taskRecord = await getDb().tasks.findById(conversationId)
         if (!taskRecord?.previewUrl) {
           await getDb()
             .tasks.update(conversationId, { previewUrl: 'ready' })
@@ -1155,6 +1156,19 @@ export class CloudbaseAgentService {
 
       if (sandboxMcpClient) {
         mcpServers.cloudbase = sandboxMcpClient.sdkServer
+      }
+
+      const taskMcpList = JSON.parse(taskRecord?.mcpServerList || '[]') || []
+      for (const mcp of taskMcpList) {
+        if (!mcp.name) continue
+        const serverType = mcp.type?.toLowerCase()
+        if (serverType === 'http' || serverType === 'sse') {
+          mcpServers[mcp.name] = {
+            type: serverType,
+            url: mcp.baseUrl,
+            headers: mcp.headers || {},
+          }
+        }
       }
 
       // ── 执行 query ─────────────────────────────────────────────────

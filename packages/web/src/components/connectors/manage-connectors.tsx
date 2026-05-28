@@ -2,7 +2,7 @@ import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } f
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
-import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from '@/components/ui/accordion'
 import {
   AlertDialog,
@@ -14,7 +14,6 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog'
-import { api } from '@/lib/api'
 import type { Connector } from '@/lib/session/types'
 import { toast } from 'sonner'
 import { useEffect, useState, useRef } from 'react'
@@ -39,6 +38,8 @@ import {
   serverTypeAtom,
   envVarsAtom,
   visibleEnvVarsAtom,
+  customHeadersAtom,
+  visibleCustomHeadersAtom,
   isEditingAtom,
   resetDialogStateAtom,
   setEditingConnectorActionAtom,
@@ -55,6 +56,8 @@ import {
 interface ConnectorDialogProps {
   open: boolean
   onOpenChange: (open: boolean) => void
+  onConnectorSaved?: (connector: Connector) => void | Promise<void>
+  initialView?: 'list' | 'presets'
 }
 
 type FormState = {
@@ -72,54 +75,61 @@ const initialState: FormState = {
 const PRESETS: PresetConfig[] = [
   {
     name: 'Browserbase',
-    type: 'local',
+    type: 'STDIO',
     command: 'npx @browserbasehq/mcp',
     envKeys: ['BROWSERBASE_API_KEY', 'BROWSERBASE_PROJECT_ID'],
   },
   {
     name: 'Context7',
-    type: 'remote',
+    type: 'HTTP',
     url: 'https://mcp.context7.com/mcp',
   },
   {
     name: 'Convex',
-    type: 'local',
+    type: 'STDIO',
     command: 'npx -y convex@latest mcp start',
   },
   {
     name: 'Figma',
-    type: 'remote',
+    type: 'HTTP',
     url: 'https://mcp.figma.com/mcp',
   },
   {
     name: 'Hugging Face',
-    type: 'remote',
+    type: 'HTTP',
     url: 'https://hf.co/mcp',
   },
   {
     name: 'Linear',
-    type: 'remote',
+    type: 'SSE',
     url: 'https://mcp.linear.app/sse',
   },
   {
     name: 'Notion',
-    type: 'remote',
+    type: 'HTTP',
     url: 'https://mcp.notion.com/mcp',
   },
   {
     name: 'Playwright',
-    type: 'local',
+    type: 'STDIO',
     command: 'npx -y @playwright/mcp@latest',
   },
   {
     name: 'Supabase',
-    type: 'remote',
+    type: 'HTTP',
     url: 'https://mcp.supabase.com/mcp',
   },
 ]
 
-export function ConnectorDialog({ open, onOpenChange }: ConnectorDialogProps) {
-  const { connectors, refreshConnectors, isLoading: connectorsLoading } = useConnectors()
+export function ConnectorDialog({ open, onOpenChange, onConnectorSaved, initialView = 'list' }: ConnectorDialogProps) {
+  const {
+    connectors,
+    refreshConnectors,
+    addConnector,
+    updateConnector,
+    deleteConnector,
+    isLoading: connectorsLoading,
+  } = useConnectors()
   const [loadingConnectors, setLoadingConnectors] = useState<Set<string>>(new Set())
 
   // Jotai atoms
@@ -130,6 +140,8 @@ export function ConnectorDialog({ open, onOpenChange }: ConnectorDialogProps) {
   const [envVars, setEnvVars] = useAtom(envVarsAtom)
   const selectedPreset = useAtomValue(selectedPresetAtom)
   const [visibleEnvVars, setVisibleEnvVars] = useAtom(visibleEnvVarsAtom)
+  const [customHeaders, setCustomHeaders] = useAtom(customHeadersAtom)
+  const [visibleCustomHeaders, setVisibleCustomHeaders] = useAtom(visibleCustomHeadersAtom)
   const resetDialogState = useSetAtom(resetDialogStateAtom)
   const setEditingConnectorAction = useSetAtom(setEditingConnectorActionAtom)
   const startAddingConnector = useSetAtom(startAddingConnectorAtom)
@@ -152,41 +164,33 @@ export function ConnectorDialog({ open, onOpenChange }: ConnectorDialogProps) {
   const pending = isEditing ? updatePending : createPending
   const setPending = isEditing ? setUpdatePending : setCreatePending
 
-  const lastStateRef = useRef<{ success: boolean; message: string }>({ success: false, message: '' })
   const [showDeleteDialog, setShowDeleteDialog] = useState(false)
   const [isDeleting, setIsDeleting] = useState(false)
+  const [testPending, setTestPending] = useState(false)
+  const [connectionVerified, setConnectionVerified] = useState(false)
+  const formRef = useRef<HTMLFormElement>(null)
 
-  // Reset to list view when dialog opens
+  // Reset view when dialog opens
   useEffect(() => {
     if (open) {
       resetDialogState()
-    }
-
-    // Reset the state ref when dialog opens/closes
-    if (!open) {
-      lastStateRef.current = { success: false, message: '' }
-    }
-  }, [open, resetDialogState])
-
-  useEffect(() => {
-    // Only show toast if state has actually changed (not just reference)
-    const stateChanged =
-      state.success !== lastStateRef.current.success || state.message !== lastStateRef.current.message
-
-    if (stateChanged && state.message) {
-      if (state.success) {
-        toast.success(state.message)
-        refreshConnectors() // Refresh after successful creation/update
-        // Go back to list view on success
-        onSuccessAction()
-      } else {
-        toast.error(state.message)
+      setConnectionVerified(false)
+      setCreateState(initialState)
+      setUpdateState(initialState)
+      setCreatePending(false)
+      setUpdatePending(false)
+      if (initialView === 'presets') {
+        startAddingConnector()
       }
-
-      // Update the ref to the current state
-      lastStateRef.current = { success: state.success, message: state.message }
     }
-  }, [state.success, state.message, refreshConnectors, onSuccessAction])
+  }, [open, initialView, resetDialogState, startAddingConnector])
+
+  // Initialize connectionVerified when entering form view
+  useEffect(() => {
+    if (view === 'form') {
+      setConnectionVerified(isEditing)
+    }
+  }, [view, isEditing])
 
   const addEnvVar = () => {
     setEnvVars([...envVars, { key: '', value: '' }])
@@ -212,31 +216,44 @@ export function ConnectorDialog({ open, onOpenChange }: ConnectorDialogProps) {
     setEnvVars(newEnvVars)
   }
 
+  const addHeaderVar = () => {
+    setCustomHeaders([...customHeaders, { key: '', value: '' }])
+  }
+
+  const removeHeaderVar = (index: number) => {
+    setCustomHeaders(customHeaders.filter((_, i) => i !== index))
+    // Update visible indices after removal
+    const newVisible = new Set<number>()
+    visibleCustomHeaders.forEach((i) => {
+      if (i < index) {
+        newVisible.add(i)
+      } else if (i > index) {
+        newVisible.add(i - 1)
+      }
+    })
+    setVisibleCustomHeaders(newVisible)
+  }
+
+  const updateHeaderVar = (index: number, field: 'key' | 'value', value: string) => {
+    const newHeaders = [...customHeaders]
+    newHeaders[index][field] = value
+    setCustomHeaders(newHeaders)
+  }
+
+  const toggleHeaderVisibility = (index: number) => {
+    const newVisible = new Set(visibleCustomHeaders)
+    if (newVisible.has(index)) {
+      newVisible.delete(index)
+    } else {
+      newVisible.add(index)
+    }
+    setVisibleCustomHeaders(newVisible)
+  }
+
   const handleToggleConnectorStatus = async (id: string, currentStatus: 'connected' | 'disconnected') => {
     const newStatus = currentStatus === 'connected' ? 'disconnected' : 'connected'
-
-    setLoadingConnectors((prev) => new Set(prev).add(id))
-
-    try {
-      const result = await api.patch<{ success: boolean; message: string }>(`/api/connectors/${id}/status`, {
-        status: newStatus,
-      })
-
-      if (result.success) {
-        await refreshConnectors()
-        toast.success(result.message)
-      } else {
-        toast.error(result.message || 'Failed to update connector status')
-      }
-    } catch (error) {
-      toast.error(error instanceof Error ? error.message : 'Failed to update connector status')
-    } finally {
-      setLoadingConnectors((prev) => {
-        const newSet = new Set(prev)
-        newSet.delete(id)
-        return newSet
-      })
-    }
+    updateConnector(id, { status: newStatus })
+    toast.success(`Connector ${newStatus === 'connected' ? 'connected' : 'disconnected'}`)
   }
 
   const handleDelete = async () => {
@@ -244,20 +261,105 @@ export function ConnectorDialog({ open, onOpenChange }: ConnectorDialogProps) {
 
     setIsDeleting(true)
     try {
-      const result = await api.delete<{ success: boolean; message: string }>(`/api/connectors/${editingConnector.id}`)
-      if (result.success) {
-        toast.success(result.message)
-        refreshConnectors()
-        // Go back to list view
-        onSuccessAction()
-      } else {
-        toast.error(result.message || 'Failed to delete connector')
-      }
+      deleteConnector(editingConnector.id)
+      toast.success('Connector deleted successfully')
+      // Go back to list view
+      onSuccessAction()
     } catch (error) {
       toast.error(error instanceof Error ? error.message : 'Failed to delete MCP server')
     } finally {
       setIsDeleting(false)
       setShowDeleteDialog(false)
+    }
+  }
+
+  const handleTestConnection = async () => {
+    setTestPending(true)
+    try {
+      const form = formRef.current
+      if (!form) {
+        toast.error('Form not found')
+        setConnectionVerified(false)
+        return
+      }
+      const formData = new FormData(form)
+      const baseUrl = String(formData.get('baseUrl') || '')
+      const command = String(formData.get('command') || '')
+      const headersObj = customHeaders.reduce(
+        (acc, { key, value }) => {
+          if (key && value) acc[key] = value
+          return acc
+        },
+        {} as Record<string, string>,
+      )
+
+      if (serverType === 'HTTP' || serverType === 'SSE') {
+        if (!baseUrl) {
+          toast.error('Base URL is required to test connection')
+          setConnectionVerified(false)
+          return
+        }
+        const controller = new AbortController()
+        const timeoutId = setTimeout(() => controller.abort(), 8000)
+        try {
+          const initHeaders = new Headers({
+            'content-type': 'application/json; charset=utf-8',
+            Accept: 'application/json, text/event-stream',
+          })
+          Object.entries(headersObj).forEach(([k, v]) => {
+            initHeaders.set(k, v)
+          })
+
+          const response = await fetch(baseUrl, {
+            method: 'POST',
+            headers: initHeaders,
+            body: JSON.stringify({
+              jsonrpc: '2.0',
+              id: 0,
+              method: 'initialize',
+              params: {
+                protocolVersion: '2025-03-26',
+                capabilities: {
+                  prompts: {},
+                  resources: {},
+                  tools: {},
+                },
+                clientInfo: {
+                  name: 'streamable-http-client',
+                  version: '1.0.0',
+                },
+              },
+            }),
+            signal: controller.signal,
+          })
+          clearTimeout(timeoutId)
+          if (response.ok) {
+            toast.success('Connection successful')
+            setConnectionVerified(true)
+            setState(initialState)
+          } else {
+            toast.error(`Connection failed: ${response.status} ${response.statusText}`)
+            setConnectionVerified(false)
+          }
+        } catch (err) {
+          clearTimeout(timeoutId)
+          if (err instanceof Error && err.name === 'AbortError') {
+            toast.error('Connection timed out')
+          } else {
+            toast.error(err instanceof Error ? err.message : 'Connection failed')
+          }
+          setConnectionVerified(false)
+        }
+      } else {
+        if (!command) {
+          toast.error('Command is required to test connection')
+          setConnectionVerified(false)
+          return
+        }
+        toast.info('Local server connection cannot be tested from the browser')
+      }
+    } finally {
+      setTestPending(false)
     }
   }
 
@@ -322,7 +424,12 @@ export function ConnectorDialog({ open, onOpenChange }: ConnectorDialogProps) {
                 <Button
                   variant="ghost"
                   size="sm"
-                  onClick={() => (view === 'form' ? goBackFromForm() : goBackFromPresets())}
+                  onClick={() => {
+                    setConnectionVerified(false)
+                    setCreateState(initialState)
+                    setUpdateState(initialState)
+                    view === 'form' ? goBackFromForm() : goBackFromPresets()
+                  }}
                   className="mr-2 -ml-2"
                 >
                   <ArrowLeft className="h-4 w-4" />
@@ -436,10 +543,20 @@ export function ConnectorDialog({ open, onOpenChange }: ConnectorDialogProps) {
           ) : (
             <div className="space-y-4 overflow-y-auto max-h-[60vh]">
               <form
+                ref={formRef}
+                onChange={() => setConnectionVerified(false)}
                 onSubmit={async (e) => {
                   e.preventDefault()
                   setPending(true)
                   setState(initialState)
+
+                  if ((serverType === 'HTTP' || serverType === 'SSE') && !connectionVerified) {
+                    const msg = 'Please test the connection before adding this MCP server'
+                    toast.error(msg)
+                    setState({ success: false, message: msg, errors: { connection: msg } })
+                    setPending(false)
+                    return
+                  }
 
                   const formData = new FormData(e.currentTarget)
                   const envObj = envVars.reduce(
@@ -449,34 +566,56 @@ export function ConnectorDialog({ open, onOpenChange }: ConnectorDialogProps) {
                     },
                     {} as Record<string, string>,
                   )
+                  const headersObj = customHeaders.reduce(
+                    (acc, { key, value }) => {
+                      if (key && value) acc[key] = value
+                      return acc
+                    },
+                    {} as Record<string, string>,
+                  )
 
-                  const body = {
-                    name: formData.get('name'),
-                    description: formData.get('description'),
+                  const now = Date.now()
+                  const connectorData: Connector = {
+                    id:
+                      isEditing && editingConnector
+                        ? editingConnector.id
+                        : `conn_${now}_${Math.random().toString(36).slice(2, 8)}`,
+                    userId: 'local',
+                    name: String(formData.get('name') || ''),
+                    description: String(formData.get('description') || '') || null,
                     type: serverType,
                     baseUrl:
-                      selectedPreset?.type === 'remote'
+                      selectedPreset?.type === 'HTTP' || selectedPreset?.type === 'SSE'
                         ? selectedPreset.url
-                        : (formData.get('baseUrl') as string) || undefined,
-                    oauthClientId: formData.get('oauthClientId'),
-                    oauthClientSecret: formData.get('oauthClientSecret'),
+                        : (formData.get('baseUrl') as string) || null,
+                    oauthClientId: String(formData.get('oauthClientId') || '') || null,
+                    oauthClientSecret: String(formData.get('oauthClientSecret') || '') || null,
                     command:
-                      selectedPreset?.type === 'local'
+                      selectedPreset?.type === 'STDIO'
                         ? selectedPreset.command
-                        : (formData.get('command') as string) || undefined,
-                    env: Object.keys(envObj).length > 0 ? envObj : undefined,
+                        : (formData.get('command') as string) || null,
+                    env: Object.keys(envObj).length > 0 ? envObj : null,
+                    headers: Object.keys(headersObj).length > 0 ? headersObj : null,
+                    status: 'connected',
+                    createdAt: isEditing && editingConnector ? editingConnector.createdAt : now,
+                    updatedAt: now,
                   }
 
                   try {
                     if (isEditing && editingConnector) {
-                      await api.patch(`/api/connectors/${editingConnector.id}`, body)
-                      setState({ success: true, message: 'Connector updated successfully', errors: {} })
+                      updateConnector(editingConnector.id, connectorData)
+                      toast.success('Connector updated successfully')
+                      await onConnectorSaved?.(connectorData)
                     } else {
-                      await api.post('/api/connectors', body)
-                      setState({ success: true, message: 'Connector created successfully', errors: {} })
+                      addConnector(connectorData)
+                      toast.success('Connector created successfully')
+                      await onConnectorSaved?.(connectorData)
                     }
+                    await refreshConnectors()
+                    onSuccessAction()
                   } catch (error) {
                     const message = error instanceof Error ? error.message : 'Failed to save connector'
+                    toast.error(message)
                     setState({ success: false, message, errors: {} })
                   } finally {
                     setPending(false)
@@ -508,7 +647,15 @@ export function ConnectorDialog({ open, onOpenChange }: ConnectorDialogProps) {
                     <div className="flex-1">
                       <p className="text-sm font-medium">Configuring {selectedPreset.name}</p>
                     </div>
-                    <Button type="button" variant="ghost" size="sm" onClick={() => clearPreset()}>
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => {
+                        clearPreset()
+                        setConnectionVerified(false)
+                      }}
+                    >
                       <X className="h-4 w-4" />
                     </Button>
                   </div>
@@ -529,27 +676,26 @@ export function ConnectorDialog({ open, onOpenChange }: ConnectorDialogProps) {
                 {!selectedPreset && !isEditing && (
                   <div className="space-y-2">
                     <Label>Server Type</Label>
-                    <RadioGroup
+                    <Select
                       value={serverType}
-                      onValueChange={(value) => setServerType(value as 'local' | 'remote')}
+                      onValueChange={(value) => {
+                        setServerType(value as 'HTTP' | 'SSE' | 'STDIO')
+                        setConnectionVerified(false)
+                      }}
                     >
-                      <div className="flex items-center space-x-2">
-                        <RadioGroupItem value="remote" id="remote" />
-                        <Label htmlFor="remote" className="font-normal cursor-pointer">
-                          Remote (HTTP/SSE)
-                        </Label>
-                      </div>
-                      <div className="flex items-center space-x-2">
-                        <RadioGroupItem value="local" id="local" />
-                        <Label htmlFor="local" className="font-normal cursor-pointer">
-                          Local (STDIO)
-                        </Label>
-                      </div>
-                    </RadioGroup>
+                      <SelectTrigger className="w-full">
+                        <SelectValue placeholder="Select server type" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="HTTP">HTTP</SelectItem>
+                        <SelectItem value="SSE">SSE</SelectItem>
+                        <SelectItem value="STDIO">STDIO</SelectItem>
+                      </SelectContent>
+                    </Select>
                   </div>
                 )}
 
-                {serverType === 'remote' ? (
+                {serverType === 'HTTP' || serverType === 'SSE' ? (
                   <>
                     <div className="space-y-2">
                       <Label htmlFor="baseUrl">Base URL</Label>
@@ -559,10 +705,58 @@ export function ConnectorDialog({ open, onOpenChange }: ConnectorDialogProps) {
                         type="url"
                         placeholder="https://api.example.com"
                         defaultValue={editingConnector?.baseUrl || selectedPreset?.url || ''}
-                        required={serverType === 'remote'}
+                        required={serverType === 'HTTP' || serverType === 'SSE'}
                         disabled={!!selectedPreset}
                       />
                       {state.errors?.baseUrl && <p className="text-sm text-red-600">{state.errors.baseUrl}</p>}
+                    </div>
+                    <div className="space-y-2">
+                      <div className="flex items-center">
+                        <Label className="flex-1">Custom Headers (optional)</Label>
+                        <Button type="button" size="sm" variant="outline" className="w-32" onClick={addHeaderVar}>
+                          <Plus className="h-4 w-4 mr-1" />
+                          Add Header
+                        </Button>
+                      </div>
+                      {customHeaders.length > 0 && (
+                        <div className="space-y-2">
+                          {customHeaders.map((header, index) => (
+                            <div key={index} className="flex gap-2">
+                              <Input
+                                placeholder="Header-Name"
+                                value={header.key}
+                                onChange={(e) => updateHeaderVar(index, 'key', e.target.value)}
+                                className="flex-1"
+                              />
+                              <div className="relative flex-1">
+                                <Input
+                                  placeholder="value"
+                                  type={visibleCustomHeaders.has(index) ? 'text' : 'password'}
+                                  value={header.value}
+                                  onChange={(e) => updateHeaderVar(index, 'value', e.target.value)}
+                                  className="pr-10"
+                                />
+                                <Button
+                                  type="button"
+                                  variant="ghost"
+                                  size="icon"
+                                  className="absolute right-0 top-0 h-full hover:bg-transparent"
+                                  onClick={() => toggleHeaderVisibility(index)}
+                                >
+                                  {visibleCustomHeaders.has(index) ? (
+                                    <EyeOff className="h-4 w-4 text-muted-foreground" />
+                                  ) : (
+                                    <Eye className="h-4 w-4 text-muted-foreground" />
+                                  )}
+                                </Button>
+                              </div>
+                              <Button type="button" variant="ghost" size="icon" onClick={() => removeHeaderVar(index)}>
+                                <X className="h-4 w-4" />
+                              </Button>
+                            </div>
+                          ))}
+                        </div>
+                      )}
                     </div>
                   </>
                 ) : (
@@ -574,7 +768,7 @@ export function ConnectorDialog({ open, onOpenChange }: ConnectorDialogProps) {
                         name="command"
                         placeholder="npx @browserbasehq/mcp"
                         defaultValue={editingConnector?.command || selectedPreset?.command || ''}
-                        required={serverType === 'local'}
+                        required={serverType === 'STDIO'}
                         disabled={!!selectedPreset}
                       />
                       <p className="text-xs text-muted-foreground">Full command including all arguments</p>
@@ -584,14 +778,14 @@ export function ConnectorDialog({ open, onOpenChange }: ConnectorDialogProps) {
                 )}
 
                 <div className="space-y-2">
-                  <div className="flex items-center justify-between">
-                    <Label>
+                  <div className="flex items-center">
+                    <Label className="flex-1">
                       Environment Variables{' '}
                       {selectedPreset && selectedPreset.envKeys && selectedPreset.envKeys.length > 0
                         ? ''
                         : '(optional)'}
                     </Label>
-                    <Button type="button" size="sm" variant="outline" onClick={addEnvVar}>
+                    <Button type="button" size="sm" variant="outline" className="w-32" onClick={addEnvVar}>
                       <Plus className="h-4 w-4 mr-1" />
                       Add Variable
                     </Button>
@@ -640,7 +834,7 @@ export function ConnectorDialog({ open, onOpenChange }: ConnectorDialogProps) {
                   )}
                 </div>
 
-                {serverType === 'remote' && (
+                {(serverType === 'HTTP' || serverType === 'SSE') && (
                   <Accordion type="single" collapsible className="w-full">
                     <AccordionItem value="advanced" className="border-none">
                       <AccordionTrigger className="text-sm py-2">Advanced Settings</AccordionTrigger>
@@ -674,36 +868,61 @@ export function ConnectorDialog({ open, onOpenChange }: ConnectorDialogProps) {
                         e.stopPropagation()
                         setShowDeleteDialog(true)
                       }}
-                      disabled={pending || isDeleting}
+                      disabled={pending || isDeleting || testPending}
                     >
                       Delete
                     </Button>
                   )}
-                  <div className={`flex space-x-2 ${isEditing ? 'ml-auto' : 'w-full justify-end'}`}>
-                    <Button
-                      type="button"
-                      variant="outline"
-                      onClick={(e) => {
-                        e.preventDefault()
-                        e.stopPropagation()
-                        goBackFromForm()
-                      }}
-                      disabled={pending || isDeleting}
-                    >
-                      Back
-                    </Button>
-                    <Button type="submit" disabled={pending || isDeleting}>
-                      {pending ? (
-                        <>
-                          <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                          {isEditing ? 'Saving...' : 'Creating...'}
-                        </>
-                      ) : isEditing ? (
-                        'Save Changes'
-                      ) : (
-                        'Add MCP Server'
-                      )}
-                    </Button>
+                  <div className={`flex flex-col items-end space-y-1 ${isEditing ? 'ml-auto' : 'w-full'}`}>
+                    {state.errors?.connection && <p className="text-sm text-red-600">{state.errors.connection}</p>}
+                    <div className={`flex space-x-2 ${isEditing ? '' : 'w-full justify-end'}`}>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        onClick={(e) => {
+                          e.preventDefault()
+                          e.stopPropagation()
+                          setConnectionVerified(false)
+                          setCreateState(initialState)
+                          setUpdateState(initialState)
+                          goBackFromForm()
+                        }}
+                        disabled={pending || isDeleting || testPending}
+                      >
+                        Back
+                      </Button>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        onClick={(e) => {
+                          e.preventDefault()
+                          e.stopPropagation()
+                          handleTestConnection()
+                        }}
+                        disabled={pending || isDeleting || testPending}
+                      >
+                        {testPending ? (
+                          <>
+                            <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                            Connecting...
+                          </>
+                        ) : (
+                          'Connect'
+                        )}
+                      </Button>
+                      <Button type="submit" disabled={pending || isDeleting || testPending}>
+                        {pending ? (
+                          <>
+                            <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                            {isEditing ? 'Saving...' : 'Creating...'}
+                          </>
+                        ) : isEditing ? (
+                          'Save Changes'
+                        ) : (
+                          'Add MCP Server'
+                        )}
+                      </Button>
+                    </div>
                   </div>
                 </div>
               </form>
