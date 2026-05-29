@@ -420,8 +420,13 @@ export function TaskChat({
     setPendingImages([])
     // 通知上层这是用户手动发送（用于重置自动修复计数等）
     onManualUserSend?.()
-    await chatSendMessage(text, (draft) => setNewMessage(draft), images.length > 0 ? images : undefined)
-    await fetchMessages(false)
+    const usedAcp = await chatSendMessage(text, (draft) => setNewMessage(draft), images.length > 0 ? images : undefined)
+    // ACP 流式路径下 SSE 已实时更新本地 messages，服务端异步落 DB，
+    // 过早 fetchMessages 会用陈旧数据覆盖本地内容（表现为“答完后消息消失”）。
+    // REST fallback 路径则需要同步服务器状态。
+    if (!usedAcp) {
+      await fetchMessages(false)
+    }
   }
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {

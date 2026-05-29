@@ -533,6 +533,8 @@ tasksRouter.patch('/:taskId', async (c) => {
           description: server?.description ?? null,
           type: server?.type,
           baseUrl: server?.baseUrl ?? null,
+          command: server?.command ?? null,
+          args: server?.args ?? null,
           headers: server?.headers ?? null,
         }))
       : null

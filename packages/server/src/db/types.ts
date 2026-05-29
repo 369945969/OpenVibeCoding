@@ -78,6 +78,7 @@ export interface Connector {
   oauthClientId: string | null
   oauthClientSecret: string | null
   command: string | null
+  args: string | null
   env: string | null
   headers: string | null
   status: string

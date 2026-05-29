@@ -7,6 +7,7 @@ export type PresetConfig = {
   name: string
   type: 'HTTP' | 'SSE' | 'STDIO'
   command?: string
+  args?: string[]
   url?: string
   envKeys?: string[]
 }

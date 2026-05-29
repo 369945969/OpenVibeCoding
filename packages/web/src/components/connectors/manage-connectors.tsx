@@ -18,7 +18,7 @@ import type { Connector } from '@/lib/session/types'
 import { toast } from 'sonner'
 import { useEffect, useState, useRef } from 'react'
 import { useConnectors } from '@/components/connectors-provider'
-import { Loader2, Plus, X, ArrowLeft, Eye, EyeOff, Pencil, Server } from 'lucide-react'
+import { Loader2, Plus, X, Eye, EyeOff, Pencil, Server } from 'lucide-react'
 import BrowserbaseIcon from '@/components/icons/browserbase-icon'
 import Context7Icon from '@/components/icons/context7-icon'
 import ConvexIcon from '@/components/icons/convex-icon'
@@ -47,7 +47,6 @@ import {
   selectPresetActionAtom,
   addCustomServerAtom,
   goBackFromFormAtom,
-  goBackFromPresetsAtom,
   onSuccessActionAtom,
   clearPresetActionAtom,
   type PresetConfig,
@@ -57,6 +56,7 @@ interface ConnectorDialogProps {
   open: boolean
   onOpenChange: (open: boolean) => void
   onConnectorSaved?: (connector: Connector) => void | Promise<void>
+  onCancelEdit?: () => void
   initialView?: 'list' | 'presets'
 }
 
@@ -76,7 +76,8 @@ const PRESETS: PresetConfig[] = [
   {
     name: 'Browserbase',
     type: 'STDIO',
-    command: 'npx @browserbasehq/mcp',
+    command: 'npx',
+    args: ['@browserbasehq/mcp'],
     envKeys: ['BROWSERBASE_API_KEY', 'BROWSERBASE_PROJECT_ID'],
   },
   {
@@ -87,7 +88,8 @@ const PRESETS: PresetConfig[] = [
   {
     name: 'Convex',
     type: 'STDIO',
-    command: 'npx -y convex@latest mcp start',
+    command: 'npx',
+    args: ['-y', 'convex@latest', 'mcp', 'start'],
   },
   {
     name: 'Figma',
@@ -112,7 +114,8 @@ const PRESETS: PresetConfig[] = [
   {
     name: 'Playwright',
     type: 'STDIO',
-    command: 'npx -y @playwright/mcp@latest',
+    command: 'npx',
+    args: ['-y', '@playwright/mcp@latest'],
   },
   {
     name: 'Supabase',
@@ -121,7 +124,13 @@ const PRESETS: PresetConfig[] = [
   },
 ]
 
-export function ConnectorDialog({ open, onOpenChange, onConnectorSaved, initialView = 'list' }: ConnectorDialogProps) {
+export function ConnectorDialog({
+  open,
+  onOpenChange,
+  onConnectorSaved,
+  onCancelEdit,
+  initialView = 'list',
+}: ConnectorDialogProps) {
   const {
     connectors,
     refreshConnectors,
@@ -148,7 +157,6 @@ export function ConnectorDialog({ open, onOpenChange, onConnectorSaved, initialV
   const selectPresetAction = useSetAtom(selectPresetActionAtom)
   const addCustomServer = useSetAtom(addCustomServerAtom)
   const goBackFromForm = useSetAtom(goBackFromFormAtom)
-  const goBackFromPresets = useSetAtom(goBackFromPresetsAtom)
   const onSuccessAction = useSetAtom(onSuccessActionAtom)
   const clearPreset = useSetAtom(clearPresetActionAtom)
 
@@ -170,9 +178,9 @@ export function ConnectorDialog({ open, onOpenChange, onConnectorSaved, initialV
   const [connectionVerified, setConnectionVerified] = useState(false)
   const formRef = useRef<HTMLFormElement>(null)
 
-  // Reset view when dialog opens
+  // Reset view when dialog opens (skip if already editing an existing connector)
   useEffect(() => {
-    if (open) {
+    if (open && !editingConnector) {
       resetDialogState()
       setConnectionVerified(false)
       setCreateState(initialState)
@@ -183,7 +191,7 @@ export function ConnectorDialog({ open, onOpenChange, onConnectorSaved, initialV
         startAddingConnector()
       }
     }
-  }, [open, initialView, resetDialogState, startAddingConnector])
+  }, [open, initialView, resetDialogState, startAddingConnector, editingConnector])
 
   // Initialize connectionVerified when entering form view
   useEffect(() => {
@@ -285,6 +293,7 @@ export function ConnectorDialog({ open, onOpenChange, onConnectorSaved, initialV
       const formData = new FormData(form)
       const baseUrl = String(formData.get('baseUrl') || '')
       const command = String(formData.get('command') || '')
+      const args = String(formData.get('args') || '')
       const headersObj = customHeaders.reduce(
         (acc, { key, value }) => {
           if (key && value) acc[key] = value
@@ -302,44 +311,76 @@ export function ConnectorDialog({ open, onOpenChange, onConnectorSaved, initialV
         const controller = new AbortController()
         const timeoutId = setTimeout(() => controller.abort(), 8000)
         try {
-          const initHeaders = new Headers({
-            'content-type': 'application/json; charset=utf-8',
-            Accept: 'application/json, text/event-stream',
-          })
-          Object.entries(headersObj).forEach(([k, v]) => {
-            initHeaders.set(k, v)
-          })
-
-          const response = await fetch(baseUrl, {
-            method: 'POST',
-            headers: initHeaders,
-            body: JSON.stringify({
-              jsonrpc: '2.0',
-              id: 0,
-              method: 'initialize',
-              params: {
-                protocolVersion: '2025-03-26',
-                capabilities: {
-                  prompts: {},
-                  resources: {},
-                  tools: {},
-                },
-                clientInfo: {
-                  name: 'streamable-http-client',
-                  version: '1.0.0',
-                },
-              },
-            }),
-            signal: controller.signal,
-          })
-          clearTimeout(timeoutId)
-          if (response.ok) {
-            toast.success('Connection successful')
-            setConnectionVerified(true)
-            setState(initialState)
+          if (serverType === 'SSE') {
+            // SSE MCP server: open an event-stream connection to verify reachability
+            const sseHeaders = new Headers({
+              Accept: 'text/event-stream',
+            })
+            Object.entries(headersObj).forEach(([k, v]) => {
+              sseHeaders.set(k, v)
+            })
+            const response = await fetch(baseUrl, {
+              method: 'GET',
+              headers: sseHeaders,
+              signal: controller.signal,
+            })
+            clearTimeout(timeoutId)
+            if (response.ok) {
+              const contentType = response.headers.get('content-type') || ''
+              if (contentType.includes('text/event-stream')) {
+                toast.success('SSE connection successful')
+                setConnectionVerified(true)
+                setState(initialState)
+              } else {
+                toast.error('Connected but response is not a valid SSE stream')
+                setConnectionVerified(false)
+              }
+            } else {
+              const body = await response.text().catch(() => '')
+              console.error('[SSE test] server error:', response.status, body.slice(0, 500))
+              toast.error(`SSE connection failed: ${response.status} ${response.statusText}`)
+              setConnectionVerified(false)
+            }
           } else {
-            toast.error(`Connection failed: ${response.status} ${response.statusText}`)
-            setConnectionVerified(false)
+            // HTTP MCP server: POST JSON-RPC initialize
+            const initHeaders = new Headers({
+              'content-type': 'application/json; charset=utf-8',
+              Accept: 'application/json',
+            })
+            Object.entries(headersObj).forEach(([k, v]) => {
+              initHeaders.set(k, v)
+            })
+            const response = await fetch(baseUrl, {
+              method: 'POST',
+              headers: initHeaders,
+              body: JSON.stringify({
+                jsonrpc: '2.0',
+                id: 0,
+                method: 'initialize',
+                params: {
+                  protocolVersion: '2025-03-26',
+                  capabilities: {
+                    prompts: {},
+                    resources: {},
+                    tools: {},
+                  },
+                  clientInfo: {
+                    name: 'streamable-http-client',
+                    version: '1.0.0',
+                  },
+                },
+              }),
+              signal: controller.signal,
+            })
+            clearTimeout(timeoutId)
+            if (response.ok) {
+              toast.success('Connection successful')
+              setConnectionVerified(true)
+              setState(initialState)
+            } else {
+              toast.error(`Connection failed: ${response.status} ${response.statusText}`)
+              setConnectionVerified(false)
+            }
           }
         } catch (err) {
           clearTimeout(timeoutId)
@@ -416,28 +457,29 @@ export function ConnectorDialog({ open, onOpenChange, onConnectorSaved, initialV
 
   return (
     <>
-      <Dialog open={open} onOpenChange={onOpenChange}>
+      <Dialog
+        open={open}
+        onOpenChange={(val) => {
+          if (!val) {
+            if (view !== 'list' && !isEditing) {
+              // In add-mode sub-views, click X to go back to list instead of closing the dialog
+              resetDialogState()
+              return
+            }
+            if (isEditing) {
+              onCancelEdit?.()
+            }
+            resetDialogState()
+          }
+          onOpenChange(val)
+        }}
+      >
         <DialogContent className="w-[800px] max-w-[90vw] max-h-[80vh] overflow-hidden">
           <DialogHeader>
-            <DialogTitle className="flex items-center">
-              {(view === 'form' || view === 'presets') && (
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  onClick={() => {
-                    setConnectionVerified(false)
-                    setCreateState(initialState)
-                    setUpdateState(initialState)
-                    view === 'form' ? goBackFromForm() : goBackFromPresets()
-                  }}
-                  className="mr-2 -ml-2"
-                >
-                  <ArrowLeft className="h-4 w-4" />
-                </Button>
-              )}
+            <DialogTitle>
               {view === 'list' && 'MCP Servers'}
               {view === 'presets' && 'Add MCP Server'}
-              {view === 'form' && (isEditing ? 'Edit MCP Server' : 'MCP Servers')}
+              {view === 'form' && (isEditing ? 'Edit MCP Server' : 'Add MCP Server')}
             </DialogTitle>
             <DialogDescription>
               {view === 'list' && 'Manage your Model Context Protocol servers.'}
@@ -594,6 +636,10 @@ export function ConnectorDialog({ open, onOpenChange, onConnectorSaved, initialV
                       selectedPreset?.type === 'STDIO'
                         ? selectedPreset.command
                         : (formData.get('command') as string) || null,
+                    args:
+                      selectedPreset?.type === 'STDIO'
+                        ? (selectedPreset.args ?? null)
+                        : (formData.get('args') as string)?.trim().split(/\s+/).filter(Boolean) || null,
                     env: Object.keys(envObj).length > 0 ? envObj : null,
                     headers: Object.keys(headersObj).length > 0 ? headersObj : null,
                     status: 'connected',
@@ -766,13 +812,28 @@ export function ConnectorDialog({ open, onOpenChange, onConnectorSaved, initialV
                       <Input
                         id="command"
                         name="command"
-                        placeholder="npx @browserbasehq/mcp"
-                        defaultValue={editingConnector?.command || selectedPreset?.command || ''}
+                        placeholder="Command"
+                        defaultValue={
+                          editingConnector ? (editingConnector.command ?? '') : (selectedPreset?.command ?? '')
+                        }
                         required={serverType === 'STDIO'}
                         disabled={!!selectedPreset}
                       />
-                      <p className="text-xs text-muted-foreground">Full command including all arguments</p>
                       {state.errors?.command && <p className="text-sm text-red-600">{state.errors.command}</p>}
+                    </div>
+                    <div className="space-y-2">
+                      <Label htmlFor="args">Arguments</Label>
+                      <Input
+                        id="args"
+                        name="args"
+                        placeholder="Arguments (space-separated)"
+                        defaultValue={
+                          editingConnector
+                            ? (editingConnector.args?.join(' ') ?? '')
+                            : (selectedPreset?.args?.join(' ') ?? '')
+                        }
+                        disabled={!!selectedPreset}
+                      />
                     </div>
                   </>
                 )}
@@ -876,40 +937,44 @@ export function ConnectorDialog({ open, onOpenChange, onConnectorSaved, initialV
                   <div className={`flex flex-col items-end space-y-1 ${isEditing ? 'ml-auto' : 'w-full'}`}>
                     {state.errors?.connection && <p className="text-sm text-red-600">{state.errors.connection}</p>}
                     <div className={`flex space-x-2 ${isEditing ? '' : 'w-full justify-end'}`}>
-                      <Button
-                        type="button"
-                        variant="outline"
-                        onClick={(e) => {
-                          e.preventDefault()
-                          e.stopPropagation()
-                          setConnectionVerified(false)
-                          setCreateState(initialState)
-                          setUpdateState(initialState)
-                          goBackFromForm()
-                        }}
-                        disabled={pending || isDeleting || testPending}
-                      >
-                        Back
-                      </Button>
-                      <Button
-                        type="button"
-                        variant="outline"
-                        onClick={(e) => {
-                          e.preventDefault()
-                          e.stopPropagation()
-                          handleTestConnection()
-                        }}
-                        disabled={pending || isDeleting || testPending}
-                      >
-                        {testPending ? (
-                          <>
-                            <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                            Connecting...
-                          </>
-                        ) : (
-                          'Connect'
-                        )}
-                      </Button>
+                      {!isEditing && (
+                        <Button
+                          type="button"
+                          variant="outline"
+                          onClick={(e) => {
+                            e.preventDefault()
+                            e.stopPropagation()
+                            setConnectionVerified(false)
+                            setCreateState(initialState)
+                            setUpdateState(initialState)
+                            goBackFromForm()
+                          }}
+                          disabled={pending || isDeleting || testPending}
+                        >
+                          Back
+                        </Button>
+                      )}
+                      {serverType !== 'STDIO' && (
+                        <Button
+                          type="button"
+                          variant="outline"
+                          onClick={(e) => {
+                            e.preventDefault()
+                            e.stopPropagation()
+                            handleTestConnection()
+                          }}
+                          disabled={pending || isDeleting || testPending}
+                        >
+                          {testPending ? (
+                            <>
+                              <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                              Connecting...
+                            </>
+                          ) : (
+                            'Connect'
+                          )}
+                        </Button>
+                      )}
                       <Button type="submit" disabled={pending || isDeleting || testPending}>
                         {pending ? (
                           <>

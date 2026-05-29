@@ -36,12 +36,14 @@ import {
   Minimize,
   AlertTriangle,
   Cloud,
+  Pencil,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { useTheme } from 'next-themes'
-import { useAtomValue } from 'jotai'
+import { useAtomValue, useSetAtom } from 'jotai'
 import { sessionAtom } from '@/lib/atoms/session'
+import { setEditingConnectorActionAtom } from '@/lib/atoms/connector-dialog'
 import { toast } from 'sonner'
 import { Claude, CodeBuddy, Codex, Copilot, Cursor, Gemini, OpenCode } from '@/components/logos'
 import { useTasks } from '@/components/app-layout'
@@ -270,6 +272,7 @@ export function TaskDetails({
   const { refreshTasks } = useTasks()
   const [showTaskMcpDialog, setShowTaskMcpDialog] = useState(false)
   const [showConnectorDialog, setShowConnectorDialog] = useState(false)
+  const setEditingConnectorAction = useSetAtom(setEditingConnectorActionAtom)
   const [diffsCache, setDiffsCache] = useState<Record<string, DiffData>>({})
   const loadingDiffsRef = useRef(false)
   const [refreshKey, setRefreshKey] = useState(0)
@@ -1208,6 +1211,8 @@ export function TaskDetails({
       description: server.description ?? null,
       type: server.type,
       baseUrl: server.baseUrl ?? null,
+      command: server.command ?? null,
+      args: server.args ?? null,
       headers: server.headers ?? null,
     }))
     const response = await fetch(`/api/tasks/${task.id}`, {
@@ -1234,6 +1239,12 @@ export function TaskDetails({
       setMcpServers(previous)
       toast.error('Failed to update MCP servers')
     }
+  }
+
+  const handleEditMcpServer = (server: Connector) => {
+    setEditingConnectorAction(server)
+    setShowTaskMcpDialog(false)
+    setShowConnectorDialog(true)
   }
 
   const handleConnectorSaved = async (connector: Connector) => {
@@ -3700,15 +3711,26 @@ export function TaskDetails({
                       )}
                     </div>
                   </div>
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="icon"
-                    className="h-8 w-8"
-                    onClick={() => handleRemoveMcpServer(index)}
-                  >
-                    <Trash2 className="h-4 w-4 text-muted-foreground" />
-                  </Button>
+                  <div className="flex items-center gap-1">
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="icon"
+                      className="h-8 w-8"
+                      onClick={() => handleEditMcpServer(server)}
+                    >
+                      <Pencil className="h-4 w-4 text-muted-foreground" />
+                    </Button>
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="icon"
+                      className="h-8 w-8"
+                      onClick={() => handleRemoveMcpServer(index)}
+                    >
+                      <Trash2 className="h-4 w-4 text-muted-foreground" />
+                    </Button>
+                  </div>
                 </Card>
               ))
             )}
@@ -3726,6 +3748,7 @@ export function TaskDetails({
         open={showConnectorDialog}
         onOpenChange={setShowConnectorDialog}
         onConnectorSaved={handleConnectorSaved}
+        onCancelEdit={() => setShowTaskMcpDialog(true)}
         initialView="presets"
       />
     </div>
