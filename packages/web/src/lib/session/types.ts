@@ -22,6 +22,7 @@ export interface Connector {
   oauthClientId?: string | null
   oauthClientSecret?: string | null
   command?: string | null
+  args?: string[] | null
   env?: Record<string, string> | null
   headers?: Record<string, string> | null
   status: 'connected' | 'disconnected'

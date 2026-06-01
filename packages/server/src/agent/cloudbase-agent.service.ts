@@ -1168,6 +1168,13 @@ export class CloudbaseAgentService {
             url: mcp.baseUrl,
             headers: mcp.headers || {},
           }
+        } else if (serverType === 'stdio') {
+          mcpServers[mcp.name] = {
+            type: serverType,
+            command: mcp.command,
+            args: mcp.args,
+            env: mcp.env,
+          }
         }
       }
 

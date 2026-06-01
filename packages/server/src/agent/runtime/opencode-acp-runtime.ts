@@ -51,6 +51,7 @@ import os from 'node:os'
 import path from 'node:path'
 import fs from 'node:fs'
 import { getDb } from '../../db'
+import { McpServer } from '@agentclientprotocol/sdk/dist/schema/types.gen'
 
 // ─── Config ──────────────────────────────────────────────────────────────
 
@@ -450,12 +451,7 @@ export class OpencodeAcpRuntime extends BaseAgentRuntime {
       //      与 storage/presign 的 tool-override 机制完全一致。
       // sandboxAuth 来自 sandbox.getAuthHeaders()，包含所有沙箱需要的 headers。
       // X-Session-Id 仅用于本地工具 schema 缓存 key，不传给沙箱。
-      const mcpServers: Array<{
-        type: 'http'
-        name: string
-        url: string
-        headers: Array<{ name: string; value: string }>
-      }> = []
+      const mcpServers: Array<McpServer> = []
       if (sandbox && sandboxResult?.sessionJwe && envId) {
         const authHeaders = await sandbox.getAuthHeaders()
         const serverPort = Number(process.env.PORT) || 3001
@@ -477,7 +473,6 @@ export class OpencodeAcpRuntime extends BaseAgentRuntime {
       const taskMcpList = JSON.parse(taskRecord?.mcpServerList || '[]') || []
       for (const mcp of taskMcpList) {
         if (!mcp.name) continue
-        console.log('taskMcpList:', mcp.name, mcp.type, mcp.baseUrl, mcp.headers)
         const serverType = mcp.type?.toLowerCase()
         if (serverType === 'http' || serverType === 'sse') {
           mcpServers.push({
@@ -487,6 +482,13 @@ export class OpencodeAcpRuntime extends BaseAgentRuntime {
             headers: mcp.headers
               ? Object.entries(mcp.headers).map(([name, value]) => ({ name, value: String(value) }))
               : [],
+          })
+        } else if (serverType === 'stdio') {
+          mcpServers.push({
+            name: mcp.name,
+            command: mcp.command,
+            args: mcp.args ?? [],
+            env: mcp.env ? Object.entries(mcp.env).map(([name, value]) => ({ name, value: String(value) })) : [],
           })
         }
       }

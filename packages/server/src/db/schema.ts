@@ -119,6 +119,7 @@ export const connectors = sqliteTable('connectors', {
   oauthClientId: text('oauth_client_id'),
   oauthClientSecret: text('oauth_client_secret'),
   command: text('command'),
+  args: text('args'),
   env: text('env'),
   headers: text('headers'),
   status: text('status').notNull().default('disconnected'), // 'connected' | 'disconnected'

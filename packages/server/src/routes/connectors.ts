@@ -21,6 +21,7 @@ app.get('/', async (c) => {
       oauthClientSecret: connector.oauthClientSecret ? decrypt(connector.oauthClientSecret) : null,
       env: connector.env ? JSON.parse(decrypt(connector.env)) : null,
       headers: connector.headers ? JSON.parse(decrypt(connector.headers)) : null,
+      args: connector.args ? JSON.parse(connector.args) : null,
     }))
 
     return c.json({
@@ -60,6 +61,7 @@ app.post('/', async (c) => {
       oauthClientId: body.oauthClientId?.trim() || undefined,
       oauthClientSecret: body.oauthClientSecret?.trim() || undefined,
       command: body.command?.trim() || undefined,
+      args: Array.isArray(body.args) && body.args.length > 0 ? body.args : undefined,
       env: body.env,
       headers: body.headers,
       status: 'connected' as const,
@@ -75,6 +77,7 @@ app.post('/', async (c) => {
       oauthClientId: connectorData.oauthClientId || null,
       oauthClientSecret: connectorData.oauthClientSecret ? encrypt(connectorData.oauthClientSecret) : null,
       command: connectorData.command || null,
+      args: connectorData.args ? JSON.stringify(connectorData.args) : null,
       env: connectorData.env ? encrypt(JSON.stringify(connectorData.env)) : null,
       headers: connectorData.headers ? encrypt(JSON.stringify(connectorData.headers)) : null,
       status: connectorData.status,
@@ -117,6 +120,7 @@ app.patch('/:id', async (c) => {
       oauthClientId: body.oauthClientId?.trim() || undefined,
       oauthClientSecret: body.oauthClientSecret?.trim() || undefined,
       command: body.command?.trim() || undefined,
+      args: Array.isArray(body.args) && body.args.length > 0 ? body.args : undefined,
       env: body.env,
       headers: body.headers,
       status: body.status || 'connected',
@@ -132,6 +136,7 @@ app.patch('/:id', async (c) => {
       oauthClientId: validatedData.oauthClientId || null,
       oauthClientSecret: validatedData.oauthClientSecret ? encrypt(validatedData.oauthClientSecret) : null,
       command: validatedData.command || null,
+      args: validatedData.args ? JSON.stringify(validatedData.args) : null,
       env: validatedData.env ? encrypt(JSON.stringify(validatedData.env)) : null,
       headers: validatedData.headers ? encrypt(JSON.stringify(validatedData.headers)) : null,
       status: validatedData.status as 'connected' | 'disconnected',

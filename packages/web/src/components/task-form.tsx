@@ -350,6 +350,8 @@ export function TaskForm({
           description: c.description,
           type: c.type,
           baseUrl: c.baseUrl,
+          command: c.command,
+          args: c.args,
           headers: c.headers,
         }))
       onSubmit({
@@ -407,7 +409,15 @@ export function TaskForm({
     console.log('[TaskForm] repo selected, calling onSubmit with repoUrl:', selectedRepoData?.clone_url)
     const connectedMcps = connectors
       .filter((c) => c.status === 'connected')
-      .map((c) => ({ name: c.name, description: c.description, type: c.type, baseUrl: c.baseUrl, headers: c.headers }))
+      .map((c) => ({
+        name: c.name,
+        description: c.description,
+        type: c.type,
+        baseUrl: c.baseUrl,
+        command: c.command,
+        args: c.args,
+        headers: c.headers,
+      }))
     onSubmit({
       prompt: prompt.trim(),
       repoUrl: selectedRepoData?.clone_url || '',
