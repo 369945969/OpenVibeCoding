@@ -14,6 +14,36 @@
  */
 
 import type { SessionKey, SessionStoreEntry, SessionSummaryEntry } from '@anthropic-ai/claude-agent-sdk'
+import type { MessageStatus } from '../../public/types.js'
+
+/**
+ * 会话消息元数据：用于分页和关联查询。
+ *
+ * 与 SessionStoreEntry 的区别：
+ *   - SessionStoreEntry → SDK 内部协议（透明转储，driver 不解释）
+ *   - SessionMessageMeta → 前端可读消息的元数据（driver 从 entries 中提取）
+ *
+ * 存储在 oak_session_messages 集合中，用于：
+ *   1. 分页查询（不需要扫描整个 session_entries 表）
+ *   2. 关联 session_entries 表获取完整内容
+ *   3. 接口层做结构转换（SDKMessage → MessageRecord）
+ */
+export interface SessionMessageMeta {
+  /** encodeSessionKey(key)，关联 session_entries 表 */
+  sessionKey: string
+  /** key.sessionId，用于前端查询 */
+  conversationId: string
+  /** sdkMsg.message?.id || entry.uuid，用于关联 session_entries 表 */
+  messageId: string
+  /** 消息角色 */
+  role: 'user' | 'assistant' | 'system'
+  /** 消息时间戳（Unix epoch 毫秒），用于排序 */
+  createdAt: number
+  /** 消息状态：pending/streaming/done/error/cancel */
+  status: MessageStatus
+  /** 最近更新时间（Unix epoch 毫秒） */
+  mtime: number
+}
 
 export interface SessionStoreDriver {
   /**
@@ -38,10 +68,36 @@ export interface SessionStoreDriver {
   loadEntries(key: SessionKey): Promise<SessionStoreEntry[] | null>
 
   /**
+   * 加载指定 messageId 列表对应的 entries（用于 getHistory 分页优化）。
+   *
+   * 比 loadEntries 高效：只拉匹配的 entries，不扫描整个 session。
+   * messageId 对应 entry.message.id 或 entry.uuid。
+   *
+   * @returns 按写入顺序排列的 entries（seq 升序）；未找到的 messageId 静默跳过。
+   */
+  loadEntriesByMessageIds(key: SessionKey, messageIds: string[]): Promise<SessionStoreEntry[]>
+
+  /**
+   * 注册 session 元数据（userId 等）。
+   *
+   * 在 session 创建时调用一次。若 session 已存在则更新 userId。
+   * 与 appendEntries 内部的 upsertSessionIndex 不冲突：
+   *   - registerSession 写 userId 等业务元数据
+   *   - upsertSessionIndex 更新 mtime
+   */
+  registerSession(args: {
+    projectKey: string
+    sessionId: string
+    userId: string
+    title?: string
+    metadata?: Record<string, unknown>
+  }): Promise<void>
+
+  /**
    * 列出某个 projectKey 下的所有 session（仅 main transcript，不含 subpath）。
    * 返回的 mtime 是 Unix epoch 毫秒。
    */
-  listSessions(projectKey: string): Promise<Array<{ sessionId: string; mtime: number }>>
+  listSessions(projectKey: string): Promise<Array<{ sessionId: string; mtime: number; userId?: string }>>
 
   /**
    * 列出某个 projectKey 下的所有 session summaries。
@@ -72,6 +128,41 @@ export interface SessionStoreDriver {
    * 列出某个 session 下的所有 subpath（subagent transcripts）。
    */
   listSubkeys(key: { projectKey: string; sessionId: string }): Promise<string[]>
+
+  /**
+   * 写入会话消息元数据（PR #4.6）。
+   *
+   * 由 CloudBaseSessionStore 在 appendEntries 内部调用，从 SDKMessage 中提取关键标识。
+   *
+   * 实现要求：
+   *   - 从 entries 中提取 assistant/user 类型的 SDKMessage
+   *   - 提取关键标识：messageId、role、createdAt、status
+   *   - 写入 oak_session_messages 集合
+   *   - 必须把 entry.uuid 作为幂等键（已存在则忽略，不抛错）
+   */
+  appendSessionMessage(key: SessionKey, entries: SessionStoreEntry[]): Promise<void>
+
+  /**
+   * 查询会话消息元数据（分页）。
+   *
+   * @param opts.limit 可选：返回条数上限（默认 100）
+   * @param opts.before 可选：返回此时间戳之前的消息（用于分页）
+   * @param opts.after 可选：返回此时间戳之后的消息（用于增量同步）
+   */
+  querySessionMessages(
+    projectKey: string,
+    conversationId: string,
+    opts?: {
+      limit?: number
+      before?: number
+      after?: number
+    },
+  ): Promise<SessionMessageMeta[]>
+
+  /**
+   * 删除某个会话的所有消息元数据。
+   */
+  deleteSessionMessages(key: SessionKey): Promise<void>
 }
 
 /**

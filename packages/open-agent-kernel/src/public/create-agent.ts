@@ -13,6 +13,7 @@ import type {
   Agent,
   AgentConfig,
   ApprovalDecision,
+  MessagePart,
   MessageRecord,
   PermissionStore,
   SandboxUserCredentials,
@@ -226,8 +227,77 @@ function createSession(deps: SessionDeps): Session {
       })
     },
 
-    async getHistory(_opts): Promise<MessageRecord[]> {
-      return []
+    async getHistory(opts): Promise<MessageRecord[]> {
+      const store = config.session?.store
+      if (!store) return []
+
+      const driver = (
+        store as { getDriver?: () => { querySessionMessages: Function; loadEntriesByMessageIds: Function } }
+      ).getDriver?.()
+      if (!driver) return []
+
+      const projectKey = config.session?.projectKey ?? config.envId
+
+      // 1. 查询 session_messages 元数据（已分页）
+      const metas = await driver.querySessionMessages(projectKey, conversationId, {
+        limit: opts?.limit,
+        before: opts?.before,
+      })
+      if (metas.length === 0) return []
+
+      // 2. 只加载匹配的 entries（分页优化：不再全量扫描）
+      const messageIds = metas.map((m: { messageId: string }) => m.messageId)
+      const entries = await driver.loadEntriesByMessageIds({ projectKey, sessionId: conversationId }, messageIds)
+      if (!entries || entries.length === 0) return []
+
+      // 3. 构建 messageId → entry 映射
+      const entryMap = new Map<string, Record<string, unknown>>()
+      for (const entry of entries) {
+        const sdkMsg = entry as Record<string, unknown>
+        if (!sdkMsg || typeof sdkMsg !== 'object') continue
+        const messageId = (sdkMsg.message as { id?: string })?.id || (entry as { uuid?: string }).uuid
+        if (messageId) {
+          entryMap.set(messageId, sdkMsg)
+        }
+      }
+
+      if (process.env.OAK_DEBUG === '1') {
+        console.error('[oak][getHistory] entryMap size:', entryMap.size, ', metas:', metas.length)
+      }
+
+      // 4. 用元数据顺序组装 MessageRecord
+      const result: MessageRecord[] = []
+      for (const meta of metas) {
+        const sdkMsg = entryMap.get(meta.messageId)
+        if (!sdkMsg) continue
+
+        const parts = extractMessageParts(sdkMsg)
+        if (parts.length === 0) continue
+
+        result.push({
+          id: meta.messageId,
+          conversationId,
+          role: meta.role,
+          parts,
+          status: meta.status,
+          createdAt: meta.createdAt,
+        })
+      }
+
+      // metas 是 desc 排序，返回给用户改为 asc（时间正序）
+      result.reverse()
+      return aggregateHistory(result)
+    },
+
+    async clearHistory(): Promise<void> {
+      const store = config.session?.store
+      if (!store) return
+
+      const driver = (store as { getDriver?: () => { deleteSessionMessages: Function } }).getDriver?.()
+      if (!driver) return
+
+      const projectKey = config.session?.projectKey ?? config.envId
+      await driver.deleteSessionMessages({ projectKey, sessionId: conversationId })
     },
 
     async getState(): Promise<string> {
@@ -248,6 +318,35 @@ function createSession(deps: SessionDeps): Session {
     },
   }
 
+  // 持久化 session 元数据（userId）到 store
+  if (config.session?.store && !resumeFromExisting) {
+    const storeWithRegister = config.session.store as {
+      registerSession?: (args: {
+        projectKey: string
+        sessionId: string
+        userId: string
+        title?: string
+        metadata?: Record<string, unknown>
+      }) => Promise<void>
+    }
+    if (typeof storeWithRegister.registerSession === 'function') {
+      const projectKey = config.session?.projectKey ?? config.envId
+      storeWithRegister
+        .registerSession({
+          projectKey,
+          sessionId: conversationId,
+          userId,
+        })
+        .catch(() => {
+          // 注册失败不阻塞 session 创建
+          if (process.env.OAK_DEBUG === '1') {
+            // eslint-disable-next-line no-console
+            console.error('[oak] registerSession failed (non-blocking)')
+          }
+        })
+    }
+  }
+
   return session
 }
 
@@ -265,6 +364,186 @@ function createDefaultPermissionStore(): InMemoryPermissionStore {
     _defaultPermissionStore = new InMemoryPermissionStore()
   }
   return _defaultPermissionStore
+}
+
+/**
+ * 从 SDKMessage 提取 MessagePart[]（PR #4.6：getHistory 内部使用）。
+ *
+ * 处理两种消息类型：
+ *   - assistant: text block → { type: 'text' }, tool_use block → { type: 'tool_call' }, thinking block → { type: 'thinking' }
+ *   - user: text block → { type: 'text' }, tool_result block → { type: 'tool_result' }
+ */
+function extractMessageParts(sdkMsg: Record<string, unknown>): MessagePart[] {
+  const parts: MessagePart[] = []
+  const content = (sdkMsg.message as { content?: unknown[] | string })?.content
+
+  // 处理 content 是字符串的情况（user 消息）
+  if (typeof content === 'string' && content.length > 0) {
+    parts.push({ type: 'text', text: content })
+    return parts
+  }
+
+  if (!Array.isArray(content)) return parts
+
+  for (const block of content) {
+    if (!block || typeof block !== 'object') continue
+    const b = block as {
+      type?: string
+      text?: string
+      id?: string
+      name?: string
+      input?: unknown
+      tool_use_id?: string
+      content?: unknown
+      is_error?: boolean
+    }
+
+    switch (b.type) {
+      case 'text':
+        if (typeof b.text === 'string' && b.text.length > 0) {
+          parts.push({ type: 'text', text: b.text })
+        }
+        break
+      case 'thinking':
+        if (typeof b.text === 'string' && b.text.length > 0) {
+          parts.push({ type: 'thinking', text: b.text })
+        }
+        break
+      case 'tool_use':
+        if (b.id && b.name) {
+          parts.push({
+            type: 'tool_call',
+            toolUseId: b.id as string,
+            toolName: b.name as string,
+            input: b.input ?? {},
+          })
+        }
+        break
+      case 'tool_result':
+        if (b.tool_use_id) {
+          parts.push({
+            type: 'tool_result',
+            toolUseId: b.tool_use_id as string,
+            output: b.content ?? null,
+            isError: Boolean(b.is_error),
+          })
+        }
+        break
+    }
+  }
+
+  return parts
+}
+
+/**
+ * 聚合 getHistory 结果：把 tool_result 合并到对应的 assistant tool_call 中，
+ * 过滤掉 SDK 内部协议产物（sentinel、resume prompt）。
+ *
+ * 规则：
+ *   1. User 消息中只含 tool_result → 按 toolUseId 合并到 assistant 的 tool_call 后面 → 排除该 user 消息
+ *   2. User 消息含 __OAK_INTERRUPT__ sentinel → 排除（标记对应 tool_call 为 awaiting_approval）
+ *   3. User 消息文本以 [系统通知] 开头 → 排除（HITL resume prompt）
+ *   4. 正常 user 文本消息 → 保留
+ *   5. Assistant 消息 → 保留，附带聚合后的 tool_result
+ */
+function aggregateHistory(records: MessageRecord[]): MessageRecord[] {
+  // Pass 1: 收集 tool_results + 识别内部产物
+  const toolResultMap = new Map<string, MessagePart>()
+  const interruptedToolUseIds = new Set<string>()
+  const excludeIds = new Set<string>()
+
+  for (const msg of records) {
+    if (msg.role !== 'user') continue
+
+    // 检测 HITL sentinel
+    const isSentinel = msg.parts.some(
+      (p) =>
+        p.type === 'tool_result' && typeof p.output === 'string' && (p.output as string).includes('__OAK_INTERRUPT__'),
+    )
+    if (isSentinel) {
+      for (const p of msg.parts) {
+        if (p.type === 'tool_result') interruptedToolUseIds.add(p.toolUseId)
+      }
+      excludeIds.add(msg.id)
+      continue
+    }
+
+    // 检测 resume prompt
+    const isResumePrompt = msg.parts.some((p) => p.type === 'text' && p.text.startsWith('[系统通知]'))
+    if (isResumePrompt) {
+      excludeIds.add(msg.id)
+      continue
+    }
+
+    // 纯 tool_result 消息 → 收集等待合并
+    const isAllToolResults = msg.parts.length > 0 && msg.parts.every((p) => p.type === 'tool_result')
+    if (isAllToolResults) {
+      for (const part of msg.parts) {
+        if (part.type === 'tool_result') {
+          // 跳过内部拦截产物（同轮多审批保护）
+          const outputStr = typeof part.output === 'string' ? part.output : JSON.stringify(part.output)
+          if (outputStr.includes('oak_pending_approval_in_turn')) {
+            interruptedToolUseIds.add(part.toolUseId)
+            continue
+          }
+          toolResultMap.set(part.toolUseId, part)
+        }
+      }
+      excludeIds.add(msg.id)
+    }
+  }
+
+  // Pass 2: 重建记录，附加 tool_result 到 assistant，过滤被放弃的 awaiting_approval
+  const result: MessageRecord[] = []
+  for (const msg of records) {
+    if (excludeIds.has(msg.id)) continue
+
+    if (msg.role === 'assistant') {
+      const augmentedParts: MessagePart[] = []
+      for (const part of msg.parts) {
+        if (part.type === 'tool_call') {
+          if (interruptedToolUseIds.has(part.toolUseId)) {
+            // 被中断且无后续 result → 直接跳过（不展示给用户）
+            // 这类 tool_call 是模型自发调用被 HITL 拦截后从未被 respond 的，属于噪音
+            continue
+          }
+          augmentedParts.push(part)
+          // 把配对的 tool_result 附在 tool_call 后面
+          const matched = toolResultMap.get(part.toolUseId)
+          if (matched) {
+            augmentedParts.push(matched)
+            toolResultMap.delete(part.toolUseId)
+          }
+        } else {
+          augmentedParts.push(part)
+        }
+      }
+      // 如果过滤后 parts 为空，排除整条消息
+      if (augmentedParts.length > 0) {
+        result.push({ ...msg, parts: augmentedParts })
+      }
+    } else {
+      result.push(msg)
+    }
+  }
+
+  // Pass 3: 合并连续 assistant 消息为一个 "turn"
+  // 行业标准：两个 user 消息之间的所有 assistant 内容属于同一个响应轮次
+  const merged: MessageRecord[] = []
+  for (const msg of result) {
+    if (msg.role === 'assistant' && merged.length > 0 && merged[merged.length - 1].role === 'assistant') {
+      // 合并到前一个 assistant 消息
+      const prev = merged[merged.length - 1]
+      merged[merged.length - 1] = {
+        ...prev,
+        parts: [...prev.parts, ...msg.parts],
+      }
+    } else {
+      merged.push(msg)
+    }
+  }
+
+  return merged
 }
 
 // ============================================================
@@ -532,12 +811,22 @@ async function resolveUserCredentials(config: AgentConfig): Promise<CloudBaseUse
 function createSessionsManagement(config: AgentConfig): Agent['sessions'] {
   return {
     async list(opts): Promise<SessionSummary[]> {
-      const store = config.session?.store as { listSessionSummaries?: (k: string) => Promise<unknown[]> } | undefined
-      if (!store?.listSessionSummaries) return []
+      const store = config.session?.store as
+        | {
+            listSessions?: (k: string) => Promise<Array<{ sessionId: string; mtime: number; userId?: string }>>
+          }
+        | undefined
+      if (!store?.listSessions) return []
       const projectKey = config.session?.projectKey ?? config.envId
-      const summaries = await store.listSessionSummaries(projectKey)
+      const sessions = await store.listSessions(projectKey)
       void opts
-      return summaries.map((s) => mapSummary(s))
+      return sessions.map((s) => ({
+        conversationId: s.sessionId,
+        userId: s.userId ?? '',
+        status: 'idle' as const,
+        createdAt: s.mtime,
+        updatedAt: s.mtime,
+      }))
     },
     async get(_conversationId): Promise<SessionSummary | null> {
       return null

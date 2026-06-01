@@ -97,7 +97,14 @@ export class CloudBaseSessionStore implements SessionStore {
     // 1. 落盘
     await this.driver.appendEntries(mapped, entries)
 
-    // 2. 增量维护 summary（仅主 transcript 需要 summary）
+    // 2. 提取消息元数据写入 session_messages（PR #4.6：双写机制）
+    if (process.env.OAK_DEBUG === '1') {
+      // eslint-disable-next-line no-console
+      console.error('[oak][session-store] appendSessionMessage called, entryCount=' + entries.length)
+    }
+    await this.driver.appendSessionMessage(mapped, entries)
+
+    // 3. 增量维护 summary（仅主 transcript 需要 summary）
     if (mapped.subpath !== undefined) return
 
     const cacheKey = `${mapped.projectKey}|${mapped.sessionId}`
@@ -121,8 +128,25 @@ export class CloudBaseSessionStore implements SessionStore {
     return this.driver.loadEntries(this.mapKey(key))
   }
 
-  async listSessions(projectKey: string): Promise<Array<{ sessionId: string; mtime: number }>> {
+  async listSessions(projectKey: string): Promise<Array<{ sessionId: string; mtime: number; userId?: string }>> {
     return this.driver.listSessions(this.mapProjectKey(projectKey))
+  }
+
+  /**
+   * 注册 session 元数据（userId 等）。
+   * 在 session 创建时由 kernel 调用，不属于 SDK SessionStore 接口。
+   */
+  async registerSession(args: {
+    projectKey: string
+    sessionId: string
+    userId: string
+    title?: string
+    metadata?: Record<string, unknown>
+  }): Promise<void> {
+    await this.driver.registerSession({
+      ...args,
+      projectKey: this.fixedProjectKey ?? args.projectKey,
+    })
   }
 
   async listSessionSummaries(projectKey: string): Promise<SessionSummaryEntry[]> {
