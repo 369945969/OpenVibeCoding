@@ -73,7 +73,8 @@ function runCommand(cmd, silent = false) {
       stdio: silent ? 'pipe' : 'inherit',
     })
   } catch (error) {
-    throw new Error(`Command failed: ${cmd}`)
+    const detail = error.stderr?.trim() || error.stdout?.trim() || error.message || ''
+    throw new Error(`Command failed: ${cmd}${detail ? '\n  ' + detail : ''}`)
   }
 }
 
@@ -400,7 +401,8 @@ function getCloudbaseCredential() {
       tmpSecretKey: auth.credential.tmpSecretKey,
       tmpToken: auth.credential.tmpToken,
     }
-  } catch {
+  } catch (err) {
+    console.warn(`[init] Failed to parse cloudbase auth.json: ${err.message || err}`)
     return null
   }
 }
@@ -438,7 +440,8 @@ async function runCloudbaseLogin() {
       resolve(code === 0)
     })
 
-    child.on('error', () => {
+    child.on('error', (err) => {
+      console.error(`[init] cloudbase login process error: ${err.message || err}`)
       resolve(false)
     })
   })
@@ -514,8 +517,8 @@ async function setupCloudbaseConfig() {
           encoding: 'utf-8',
         })
         log('cloudbase CLI 登录成功', 'success')
-      } catch {
-        log('cloudbase CLI 登录失败，将继续尝试获取环境列表', 'warn')
+      } catch (e) {
+        log(`cloudbase CLI 登录失败: ${e.stderr?.trim() || e.message || e}，将继续尝试获取环境列表`, 'warn')
       }
     }
     // choice === '2' 或其他：继续进入密钥输入
@@ -557,7 +560,7 @@ async function setupCloudbaseConfig() {
         })
         log('cloudbase CLI 登录成功', 'success')
       } catch (e) {
-        log('cloudbase CLI 登录失败，请检查密钥是否正确', 'warn')
+        log(`cloudbase CLI 登录失败: ${e.stderr?.trim() || e.message || e}`, 'warn')
       }
 
       usePermanentKey = true
@@ -586,7 +589,7 @@ async function setupCloudbaseConfig() {
     const parsed = JSON.parse(output)
     envList = (parsed.data || []).filter(e => e.status === 'NORMAL')
   } catch (e) {
-    log(`无法从 cloudbase CLI 获取环境列表: ${e.message || output}`, 'warn')
+    log(`无法从 cloudbase CLI 获取环境列表: ${e.stderr?.trim() || e.message || output}`, 'warn')
   }
 
   let selectedEnvId = ''
@@ -1010,8 +1013,8 @@ async function setupTcr() {
     log('TCR 配置完成', 'success')
     return true
   } catch (error) {
-    log('TCR 配置失败，可稍后手动执行。', 'warn')
-    log('运行：node scripts/setup-tcr.mjs', 'info')
+    log(`TCR 配置失败: ${error.message || error}`, 'warn')
+    log('可稍后手动执行：node scripts/setup-tcr.mjs', 'info')
     return false
   }
 }
