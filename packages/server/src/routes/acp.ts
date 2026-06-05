@@ -26,7 +26,12 @@ import { toSessionInfo } from '../agent/session-projection.service.js'
 import { persistenceService } from '../agent/persistence.service.js'
 import { getAgentRun, removeAgent, type StopReason } from '../agent/agent-registry.js'
 import { agentRuntimeRegistry } from '../agent/runtime/index.js'
-import { emitForConversation, getAskUserToken, markAskUserPending, getMessageBuilder } from '../agent/runtime/opencode-acp-runtime.js'
+import {
+  emitForConversation,
+  getAskUserToken,
+  markAskUserPending,
+  getMessageBuilder,
+} from '../agent/runtime/opencode-acp-runtime.js'
 import { loadConfig } from '../config/store.js'
 import { getDb } from '../db/index.js'
 import { nanoid } from 'nanoid'
@@ -1194,7 +1199,11 @@ acp.post('/internal/ask-user', async (c) => {
       sessionUpdate: 'ask_user',
       toolCallId,
       assistantMessageId: '',
-      questions: questions as Array<{ question: string; header: string; options: Array<{ label: string; description: string }> }>,
+      questions: questions as Array<{
+        question: string
+        header: string
+        options: Array<{ label: string; description: string }>
+      }>,
       id: toolCallId,
       input: { questions },
     } as unknown as AgentCallbackMessage)

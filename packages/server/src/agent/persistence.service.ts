@@ -541,7 +541,10 @@ export class PersistenceService {
     const app = await this.getCloudBaseApp()
     const _ = app.database().command
 
-    const { data } = await collection.where({ recordId: _.eq(recordId) }).limit(1).get()
+    const { data } = await collection
+      .where({ recordId: _.eq(recordId) })
+      .limit(1)
+      .get()
     if (!data || data.length === 0) return []
     return ((data[0] as any).parts || []) as UnifiedMessagePart[]
   }

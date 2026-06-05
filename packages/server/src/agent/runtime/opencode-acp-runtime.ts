@@ -111,7 +111,9 @@ function clearEmitter(conversationId: string): void {
  */
 const messageBuilders = new Map<string, import('./opencode-message-builder.js').OpencodeMessageBuilder>()
 
-export function getMessageBuilder(conversationId: string): import('./opencode-message-builder.js').OpencodeMessageBuilder | undefined {
+export function getMessageBuilder(
+  conversationId: string,
+): import('./opencode-message-builder.js').OpencodeMessageBuilder | undefined {
   return messageBuilders.get(conversationId)
 }
 
@@ -207,7 +209,10 @@ export class OpencodeAcpRuntime extends BaseAgentRuntime {
 
       if (latestRecord) {
         for (const [recordId, entry] of Object.entries(options.askAnswers)) {
-          const { toolCallId: answerToolCallId, answers } = entry as { toolCallId: string; answers: Record<string, string> }
+          const { toolCallId: answerToolCallId, answers } = entry as {
+            toolCallId: string
+            answers: Record<string, string>
+          }
 
           // 从 stream_events 读取 ask_user 事件获取 questions 上下文
           let questionContext = ''
@@ -218,9 +223,7 @@ export class OpencodeAcpRuntime extends BaseAgentRuntime {
             )
             if (askUserEvent) {
               const questions = askUserEvent.event?.questions || []
-              questionContext = questions
-                .map((q: any) => q.question)
-                .join('\n')
+              questionContext = questions.map((q: any) => q.question).join('\n')
             }
           } catch (e) {
             console.warn('[OpencodeAcpRuntime] read stream_events for askAnswers failed:', (e as Error).message)
@@ -228,8 +231,12 @@ export class OpencodeAcpRuntime extends BaseAgentRuntime {
 
           // 格式化用户答案为 tool_result
           const formatted = questionContext
-            ? `${questionContext}\n用户的选择：\n${Object.entries(answers).map(([k, v]) => ` · ${k}: ${v}`).join('\n')}`
-            : Object.entries(answers).map(([k, v]) => `${k}: ${v}`).join('\n')
+            ? `${questionContext}\n用户的选择：\n${Object.entries(answers)
+                .map(([k, v]) => ` · ${k}: ${v}`)
+                .join('\n')}`
+            : Object.entries(answers)
+                .map(([k, v]) => `${k}: ${v}`)
+                .join('\n')
 
           try {
             await persistenceService.updateToolResult(
