@@ -1221,7 +1221,8 @@ async function setupSandboxImage() {
   const SERVICE_NAME = 'sandbox-base-image'
   const SOURCE_DIR = resolve(process.cwd(), 'scripts/sandbox-image')
 
-  // 若服务不存在，先用 API 预创建（MinNum=0, MaxNum=0），避免 deploy 触发自动扩容
+  // 若服务不存在，先用 API 预创建（MinNum=0, MaxNum=1），避免 deploy 触发自动扩容
+  // 注意：CreateCloudRunServer 的 MaxNum 必须 > 0，不能为 0
   try {
     const existResult = await tcbr.call({
       Action: 'DescribeCloudRunServers',
@@ -1229,7 +1230,7 @@ async function setupSandboxImage() {
     })
     const exists = existResult.ServerList?.length > 0
     if (!exists) {
-      log('服务不存在，预创建（MinNum=0, MaxNum=0）以禁止自动拉起 Pod...', 'info')
+      log('服务不存在，预创建（MinNum=0, MaxNum=1）以禁止自动拉起 Pod...', 'info')
       await tcbr.call({
         Action: 'CreateCloudRunServer',
         Param: {
@@ -1241,11 +1242,11 @@ async function setupSandboxImage() {
           Items: [
             { Key: 'Port', IntValue: 9000 },
             { Key: 'MinNum', IntValue: 0 },
-            { Key: 'MaxNum', IntValue: 0 },
+            { Key: 'MaxNum', IntValue: 1 },
           ],
         },
       })
-      log('服务预创建完成', 'success')
+      log('服务预创建完成（MinNum=0, MaxNum=1）', 'success')
     }
   } catch (err) {
     // 预创建失败不阻断，deploy 时 CLI 会自动创建（副本数用默认值）
