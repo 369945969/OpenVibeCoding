@@ -41,8 +41,8 @@ import { CloudbaseAgentService } from '../cloudbase-agent.service.js'
 import { getAcpTransportFactory, getResolvedBin, type AcpTransport } from './acp-transport.js'
 import { getOpencodeConfigDir } from './opencode-installer.js'
 import { resolveModels } from './opencode-catalog.js'
-import { registerPending, resolvePending, rejectPendingForConversation } from './pending-permission-registry.js'
-import { resolvePendingQuestion, rejectPendingQuestionsForConversation } from './pending-question-registry.js'
+// pending registries 已移除：tool_confirm 和 askUser 都用 abort + DB resume 模式。
+// tool_call + input 在 abort 前持久化到 DB，resume 时写 tool_result + spawn 新进程。
 import { OpencodeMessageBuilder, findLastRecordIds, buildHistoryContextPrompt } from './opencode-message-builder.js'
 import { BaseAgentRuntime } from './base-runtime.js'
 import type { SandboxInstance } from '../../sandbox/scf-sandbox-manager.js'
@@ -103,6 +103,33 @@ function registerEmitter(conversationId: string, emit: (m: AgentCallbackMessage)
 
 function clearEmitter(conversationId: string): void {
   emitters.delete(conversationId)
+}
+
+/**
+ * Per-conversation messageBuilder 注册表：供 /internal/ask-user 等外部 handler
+ * 在 finalize 之前更新 tool_call input（避免被 messageBuilder.finalize 覆盖）。
+ */
+const messageBuilders = new Map<string, import('./opencode-message-builder.js').OpencodeMessageBuilder>()
+
+export function getMessageBuilder(conversationId: string): import('./opencode-message-builder.js').OpencodeMessageBuilder | undefined {
+  return messageBuilders.get(conversationId)
+}
+
+/**
+ * 标记 conversation 有 ask_user 中断（abort 后保持 pending status，不走 cancel）。
+ */
+const askUserPending = new Set<string>()
+
+export function markAskUserPending(conversationId: string): void {
+  askUserPending.add(conversationId)
+}
+
+export function isAskUserPending(conversationId: string): boolean {
+  return askUserPending.has(conversationId)
+}
+
+export function clearAskUserPending(conversationId: string): void {
+  askUserPending.delete(conversationId)
 }
 
 /**
@@ -169,43 +196,105 @@ export class OpencodeAcpRuntime extends BaseAgentRuntime {
 
   async chatStream(prompt: string, callback: AgentCallback | null, options: AgentOptions): Promise<ChatStreamResult> {
     const conversationId = options.conversationId || uuidv4()
+    const envId = options.envId || ''
+    const userId = options.userId || 'anonymous'
 
-    // Resume path：已有挂起的 agent + 携带 toolConfirmation / askAnswers
-    //   → 不 spawn 新进程，直接 resolve 挂起的 permission Promise / question HTTP
-    //   → opencode 收到 outcome/answers 后继续执行，session/update 流继续
-    if (isAgentRunning(conversationId)) {
-      const run = getAgentRun(conversationId)!
+    // ── Resume path 1: askAnswers（abort + DB resume 模式）──
+    // 中断时子进程已 abort，questions 存在 stream_events 的 ask_user 事件中。
+    // 前端带 askAnswers → 写 tool_result 到 DB → spawn 新进程从 DB 恢复。
+    if (options.askAnswers && Object.keys(options.askAnswers).length > 0 && envId) {
+      const latestRecord = await persistenceService.getLatestRecordStatus(conversationId, userId, envId)
 
-      // 更新 liveCallback 到新 SSE 流（第一轮的 SSE 可能已关）
-      updateLiveCallback(conversationId, callback)
+      if (latestRecord) {
+        for (const [recordId, entry] of Object.entries(options.askAnswers)) {
+          const { toolCallId: answerToolCallId, answers } = entry as { toolCallId: string; answers: Record<string, string> }
 
-      if (options.toolConfirmation) {
-        const resolved = resolvePending(
-          conversationId,
-          options.toolConfirmation.interruptId,
-          options.toolConfirmation.payload.action,
-        )
-        if (!resolved) {
-          console.warn(
-            `[OpencodeAcpRuntime] toolConfirmation arrived but no pending registration for interruptId=${options.toolConfirmation.interruptId}`,
-          )
-        }
-      }
-
-      if (options.askAnswers) {
-        // askAnswers 结构：{ [assistantMessageId|recordId]: { toolCallId, answers } }
-        // 我们只关心 value 里的 toolCallId + answers
-        for (const entry of Object.values(options.askAnswers)) {
-          const resolved = resolvePendingQuestion(conversationId, entry.toolCallId, entry.answers)
-          if (!resolved) {
-            console.warn(
-              `[OpencodeAcpRuntime] askAnswers arrived but no pending question for toolCallId=${entry.toolCallId}`,
+          // 从 stream_events 读取 ask_user 事件获取 questions 上下文
+          let questionContext = ''
+          try {
+            const streamEvents = await persistenceService.getStreamEvents(conversationId, latestRecord.recordId)
+            const askUserEvent = streamEvents.find(
+              (evt: any) => evt.event?.sessionUpdate === 'ask_user' && evt.event?.toolCallId === answerToolCallId,
             )
+            if (askUserEvent) {
+              const questions = askUserEvent.event?.questions || []
+              questionContext = questions
+                .map((q: any) => q.question)
+                .join('\n')
+            }
+          } catch (e) {
+            console.warn('[OpencodeAcpRuntime] read stream_events for askAnswers failed:', (e as Error).message)
+          }
+
+          // 格式化用户答案为 tool_result
+          const formatted = questionContext
+            ? `${questionContext}\n用户的选择：\n${Object.entries(answers).map(([k, v]) => ` · ${k}: ${v}`).join('\n')}`
+            : Object.entries(answers).map(([k, v]) => `${k}: ${v}`).join('\n')
+
+          try {
+            await persistenceService.updateToolResult(
+              conversationId,
+              latestRecord.recordId,
+              answerToolCallId,
+              formatted,
+              'done',
+            )
+          } catch (e) {
+            console.warn('[OpencodeAcpRuntime] updateToolResult for askAnswers failed:', (e as Error).message)
           }
         }
+
+        // finalize the pending assistant record
+        await persistenceService.updateRecordStatus(latestRecord.recordId, 'done')
       }
 
-      if (!options.toolConfirmation && !options.askAnswers && process.env.OPENCODE_ACP_DEBUG) {
+      // 用 resume prompt 继续对话（新进程会从 DB 加载历史）
+      prompt = `[系统通知] 用户已回答了你的问题。请根据回答继续执行。`
+      // Fall through to normal launchAgent flow
+    }
+
+    // ── Resume path 2: toolConfirmation（abort + DB 模式）──
+    // requestPermission 时子进程已被 abort，pending state 在 record status='pending'。
+    // 前端带 toolConfirmation → 写结果到 DB → spawn 新进程从 DB 恢复。
+    if (options.toolConfirmation && envId) {
+      const latestRecord = await persistenceService.getLatestRecordStatus(conversationId, userId, envId)
+
+      if (latestRecord) {
+        const { interruptId, payload } = options.toolConfirmation
+        const action = payload?.action || 'deny'
+
+        let resultText: string
+        if (action === 'allow' || action === 'allow_always') {
+          resultText = '用户已批准此操作，请继续执行。'
+        } else {
+          resultText = '用户拒绝了此操作。'
+        }
+
+        try {
+          await persistenceService.updateToolResult(
+            conversationId,
+            latestRecord.recordId,
+            interruptId,
+            resultText,
+            'done',
+          )
+        } catch (e) {
+          console.warn('[OpencodeAcpRuntime] updateToolResult for toolConfirmation failed:', (e as Error).message)
+        }
+
+        await persistenceService.updateRecordStatus(latestRecord.recordId, 'done')
+      }
+
+      // 用 resume prompt 继续对话（新进程会从 DB 加载历史）
+      prompt = `[系统通知] 用户已对工具确认做出回应。请根据上下文继续执行。`
+      // Fall through to normal launchAgent flow
+    }
+
+    // Agent still running (no resume payload) → observe existing stream
+    if (isAgentRunning(conversationId) && !options.toolConfirmation) {
+      const run = getAgentRun(conversationId)!
+      updateLiveCallback(conversationId, callback)
+      if (process.env.OPENCODE_ACP_DEBUG) {
         console.log(
           `[OpencodeAcpRuntime] chatStream re-entered without resume payload (conv=${conversationId}); returning existing turn`,
         )
@@ -289,6 +378,9 @@ export class OpencodeAcpRuntime extends BaseAgentRuntime {
           userId,
         })
       : null
+    if (messageBuilder) {
+      messageBuilders.set(conversationId, messageBuilder)
+    }
 
     // emit 每次动态取 liveCallback（resume 时回调会被替换）
     // 第一轮由 chatStream 调用 registerLiveCallback 写入；第二轮（resume）由
@@ -394,16 +486,14 @@ export class OpencodeAcpRuntime extends BaseAgentRuntime {
             await this.handleSessionUpdate(params.update, emit)
           },
           requestPermission: async (params) => {
-            // ACP 权限请求 → 桥接到前端 ToolConfirm UI
+            // ACP 权限请求 → CodeBuddy 模式：abort 子进程，pending state 隐式存储
             //
-            // 流程：
-            //   1. 生成/取 interruptId（前端用来回传 toolConfirmation）
-            //   2. 发 AgentCallbackMessage(type='tool_confirm')：前端显示确认卡片
-            //   3. registerPending 注册一个挂起 Promise
-            //   4. await pending：handler 卡住 → opencode 也卡住
-            //   5. 前端用户选择 → 下一轮 chatStream 带 toolConfirmation
-            //   6. chatStream 调 resolvePending → 本 Promise resolve → handler 返回
-            //   7. opencode 收到 outcome 后继续
+            // 流程（对齐 CodeBuddy canUseTool { deny, interrupt: true }）：
+            //   1. 发 tool_confirm 事件 → 写入 stream_events + SSE 推前端
+            //   2. 延迟 abort 子进程（让 ACP handler 先返回 reject）
+            //   3. 返回 reject_once 给 ACP（子进程马上被杀，不会处理这个 reject）
+            //   4. assistant record status='pending'（隐式 pending state）
+            //   5. 前端用户决策 → 新 chatStream + toolConfirmation → 从 DB 恢复
             const interruptId = params.toolCall?.toolCallId || uuidv4()
             const toolName = params.toolCall?.title || 'unknown'
             const toolInput = (params.toolCall?.rawInput as Record<string, unknown>) || {}
@@ -415,20 +505,16 @@ export class OpencodeAcpRuntime extends BaseAgentRuntime {
               input: toolInput,
             })
 
-            try {
-              // 这里会长时间挂起 — 直到外部 resolvePending 或 rejectPendingForConversation
-              return await registerPending(conversationId, interruptId, params.options as any[])
-            } catch (e) {
-              // abort/reject 时 fallback：让 opencode 收到拒绝（避免它卡死）
-              const reject =
-                params.options.find((o: { kind: string }) => o.kind === 'reject_once') ??
-                params.options[params.options.length - 1]
-              console.warn(
-                `[OpencodeAcpRuntime] pending permission rejected (conv=${conversationId}, interrupt=${interruptId}):`,
-                (e as Error).message,
-              )
-              return { outcome: { outcome: 'selected', optionId: reject!.optionId } }
-            }
+            // 延迟 abort：让 ACP handler 先返回 reject，然后杀子进程
+            // 子进程被杀后 launchAgent 的 catch/finally 块会清理资源
+            setTimeout(() => {
+              abortController.abort()
+            }, 10)
+
+            const reject =
+              params.options.find((o: { kind: string }) => o.kind === 'reject_once') ??
+              params.options[params.options.length - 1]
+            return { outcome: { outcome: 'selected', optionId: reject!.optionId } }
           },
         }),
         transport.stream,
@@ -540,37 +626,36 @@ export class OpencodeAcpRuntime extends BaseAgentRuntime {
       finalRecordStatus = 'done'
     } catch (error: any) {
       const isAbort = abortController.signal.aborted || error?.name === 'AbortError'
+      const isAskUser = isAskUserPending(conversationId)
+      clearAskUserPending(conversationId)
+
       console.error('[OpencodeAcpRuntime] launchAgent error:', error)
-      // 释放挂起的权限请求（否则 opencode 子进程卡住 + chatStream 永远不返回）
-      const rejectedCount = rejectPendingForConversation(
-        conversationId,
-        isAbort ? 'Aborted' : `runtime error: ${error?.message || error}`,
-      )
-      const rejectedQ = rejectPendingQuestionsForConversation(
-        conversationId,
-        isAbort ? 'Aborted' : `runtime error: ${error?.message || error}`,
-      )
-      if ((rejectedCount > 0 || rejectedQ > 0) && process.env.OPENCODE_ACP_DEBUG) {
-        console.log(
-          `[OpencodeAcpRuntime] rejected ${rejectedCount} pending permissions + ${rejectedQ} pending questions due to error`,
+
+      if (isAskUser) {
+        // ask_user abort：不发 error 事件，DB record 保持 pending status。
+        // 前端从 stream_events 恢复 ask_user UI，用户回答后新 chatStream resume。
+        // completeAgent 用 'cancelled'（registry 是短暂内存状态），DB 用 'pending'。
+        completeAgent(conversationId, 'cancelled', undefined, 'cancelled')
+        finalRecordStatus = 'pending'
+      } else {
+        // 普通 abort / 错误
+        try {
+          await emit({
+            type: 'error',
+            content: isAbort ? 'Aborted' : `OpenCode runtime error: ${error?.message || String(error)}`,
+          })
+        } catch {
+          /* noop */
+        }
+        // OpenCode 抛错没法拿到模型自己的 stopReason：isAbort → cancelled，其它 → refusal（ACP 合法值）
+        completeAgent(
+          conversationId,
+          isAbort ? 'cancelled' : 'error',
+          String(error?.message || error),
+          isAbort ? 'cancelled' : 'refusal',
         )
+        finalRecordStatus = isAbort ? 'cancel' : 'error'
       }
-      try {
-        await emit({
-          type: 'error',
-          content: isAbort ? 'Aborted' : `OpenCode runtime error: ${error?.message || String(error)}`,
-        })
-      } catch {
-        /* noop */
-      }
-      // OpenCode 抛错没法拿到模型自己的 stopReason：isAbort → cancelled，其它 → refusal（ACP 合法值）
-      completeAgent(
-        conversationId,
-        isAbort ? 'cancelled' : 'error',
-        String(error?.message || error),
-        isAbort ? 'cancelled' : 'refusal',
-      )
-      finalRecordStatus = isAbort ? 'cancel' : 'error'
     } finally {
       if (transport) {
         try {
@@ -619,6 +704,7 @@ export class OpencodeAcpRuntime extends BaseAgentRuntime {
       // 清掉 liveCallback + emitter 注册，避免 map 泄漏
       clearLiveCallback(conversationId)
       clearEmitter(conversationId)
+      messageBuilders.delete(conversationId)
       setTimeout(() => removeAgent(conversationId, turnId), 5000)
     }
   }
@@ -626,7 +712,11 @@ export class OpencodeAcpRuntime extends BaseAgentRuntime {
   /**
    * ACP session/update → 内部 AgentCallbackMessage。
    */
-  private async handleSessionUpdate(update: any, emit: (msg: AgentCallbackMessage) => Promise<void>): Promise<void> {
+  private async handleSessionUpdate(
+    update: any,
+    emit: (msg: AgentCallbackMessage) => Promise<void>,
+    conversationId?: string,
+  ): Promise<void> {
     const tag = update.sessionUpdate as string | undefined
     if (!tag) return
 
@@ -715,7 +805,8 @@ function makeEmitter(ctx: {
       //   - tool_use：工具开始执行 → 立刻落库，让前端在挂起期间能看到"待回答/待确认"卡片
       //     （尤其 AskUserQuestion / ToolConfirm 场景，会等很久才有 tool_result）
       //   - tool_result：工具执行完毕 → 反映最新状态
-      if (msg.type === 'tool_use' || msg.type === 'tool_result') {
+      //   - ask_user：问题发出 → 立刻落库（abort 前必须持久化，否则 finalize 时数据丢失）
+      if (msg.type === 'tool_use' || msg.type === 'tool_result' || msg.type === 'ask_user') {
         messageBuilder.flushToDb().catch((e) => {
           console.error('[OpencodeAcpRuntime] flushToDb error:', e)
         })

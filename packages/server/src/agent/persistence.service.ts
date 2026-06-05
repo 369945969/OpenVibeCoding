@@ -533,6 +533,19 @@ export class PersistenceService {
     await this.replacePartsInRecord(recordId, parts)
   }
 
+  /**
+   * Public: 读取指定 record 的 parts 数组（用于 resume 时检查/修改 parts）。
+   */
+  async getRecordParts(recordId: string): Promise<UnifiedMessagePart[]> {
+    const collection = await this.getCollection()
+    const app = await this.getCloudBaseApp()
+    const _ = app.database().command
+
+    const { data } = await collection.where({ recordId: _.eq(recordId) }).limit(1).get()
+    if (!data || data.length === 0) return []
+    return ((data[0] as any).parts || []) as UnifiedMessagePart[]
+  }
+
   // ========== Message Grouping ==========
 
   private groupMessages(messages: CodeBuddyMessage[]): CodeBuddyMessage[][] {

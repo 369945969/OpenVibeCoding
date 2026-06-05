@@ -61,6 +61,17 @@ export class OpencodeMessageBuilder {
   constructor(private readonly opts: OpencodeMessageBuilderOptions) {}
 
   /**
+   * 更新内存中指定 tool_call 的 input（用于 /internal/ask-user 等外部注入场景）。
+   * 在 finalize 之前调用，确保 flushToDb 写入正确的 input。
+   */
+  updateToolCallInput(toolCallId: string, input: unknown): void {
+    const idx = this.toolCallIndexById.get(toolCallId)
+    if (idx !== undefined && this.parts[idx]) {
+      this.parts[idx].content = typeof input === 'string' ? input : JSON.stringify(input)
+    }
+  }
+
+  /**
    * 处理一条 AgentCallbackMessage。
    * 注意：不在这里写 DB（为了性能和事务简化）；DB 落库通过 flushToDb() 手动触发。
    */

@@ -26,8 +26,7 @@ import { toSessionInfo } from '../agent/session-projection.service.js'
 import { persistenceService } from '../agent/persistence.service.js'
 import { getAgentRun, removeAgent, type StopReason } from '../agent/agent-registry.js'
 import { agentRuntimeRegistry } from '../agent/runtime/index.js'
-import { emitForConversation, getAskUserToken } from '../agent/runtime/opencode-acp-runtime.js'
-import { registerPendingQuestion } from '../agent/runtime/pending-question-registry.js'
+import { emitForConversation, getAskUserToken, markAskUserPending, getMessageBuilder } from '../agent/runtime/opencode-acp-runtime.js'
 import { loadConfig } from '../config/store.js'
 import { getDb } from '../db/index.js'
 import { nanoid } from 'nanoid'
@@ -1160,14 +1159,12 @@ acp.get('/runtimes', async (c) => {
  * **只给 opencode 子进程的 question custom tool 调**。server 本地回环。
  * 认证：X-Internal-Token header（ASK_USER_TOKEN env，runtime 启动时生成，同 env 注入子进程）
  *
- * 行为：
+ * 行为（CodeBuddy 模式 — abort + 隐式 pending state）：
  *   1. 验证 conversationId 对应的 agent 还活着
  *   2. 通过 runtime.emit 发 ask_user AgentCallbackMessage → SSE 推给前端
- *   3. 注册 PendingQuestion，挂起当前 HTTP response 不返回
- *   4. 当用户答复（下一轮 prompt.askAnswers 到达）触发 resolvePendingQuestion
- *      → 本 handler 的 res.json(answers) 返回给 opencode 子进程
- *
- * Timeout：默认 10 分钟（可由 ASK_USER_TIMEOUT_MS env 覆盖）
+ *   3. abort 子进程（ask_user 事件已写入 stream_events，前端可恢复 UI）
+ *   4. 立即返回（子进程已死，tool fetch 会收到连接中断）
+ *   5. 用户答复 → 新 chatStream + askAnswers → 从 DB 恢复
  */
 acp.post('/internal/ask-user', async (c) => {
   const body = await c.req.json<{
@@ -1186,40 +1183,39 @@ acp.post('/internal/ask-user', async (c) => {
     return c.json({ error: 'no active agent for conversation' }, 409)
   }
 
-  // emit ask_user 事件 → SSE 推给前端
+  // emit ask_user 事件 → SSE 推给前端 + 写入 stream_events
+  // 直接构造 ACP session update 格式（questions 在顶层），
+  // 而不是 AgentCallbackMessage 格式（questions 在 input 里嵌套）。
+  // 原因：stream_events 存的是原始事件，前端 reconnect 到 /observe 时直接回放，
+  // 不经过 convertToSessionUpdate 转换。所以事件必须已经是前端期望的格式。
   try {
     await emitForConversation(conversationId, {
       type: 'ask_user',
+      sessionUpdate: 'ask_user',
+      toolCallId,
+      assistantMessageId: '',
+      questions: questions as Array<{ question: string; header: string; options: Array<{ label: string; description: string }> }>,
       id: toolCallId,
       input: { questions },
-    })
+    } as unknown as AgentCallbackMessage)
   } catch (e) {
     console.error('[internal/ask-user] emit failed:', e)
     return c.json({ error: 'emit failed' }, 500)
   }
 
-  // 挂起：注册一个 pending question，等 runtime.chatStream(askAnswers) 来 resolve
-  const timeoutMs = Number(process.env.ASK_USER_TIMEOUT_MS || 10 * 60 * 1000)
-  return await new Promise<Response>((resolve) => {
-    const timer = setTimeout(() => {
-      resolve(c.json({ error: 'timeout waiting for user answer' }, 408))
-    }, timeoutMs)
+  // 不写 tool_call part 到 DB（CloudBase 安全规则可能阻止更新 parts）。
+  // 关键数据（questions）已在 stream_events 的 ask_user 事件中持久化。
+  // resume 时从 stream_events 恢复 questions 并写入 tool_result。
 
-    registerPendingQuestion({
-      conversationId,
-      toolCallId,
-      questions,
-      createdAt: Date.now(),
-      resolve: (answers) => {
-        clearTimeout(timer)
-        resolve(c.json({ ok: true, answers }))
-      },
-      reject: (reason) => {
-        clearTimeout(timer)
-        resolve(c.json({ error: reason }, 500))
-      },
-    })
-  })
+  // 标记 ask_user pending → catch 块检查此标记，保持 status='pending'（不走 cancel）
+  markAskUserPending(conversationId)
+
+  // abort 子进程（CodeBuddy 模式：interrupt 后子进程退出，resume 时新进程从 DB 恢复）
+  run.abortController.abort()
+
+  // 立即返回（子进程已死，AskUserQuestion tool 的 fetch 会收到连接中断，
+  // try/catch 会处理；tool_call + questions 已持久化到 DB，resume 时可读取）
+  return c.json({ ok: true, status: 'aborted_pending_user_answer' })
 })
 
 export default acp
