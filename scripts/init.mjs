@@ -200,20 +200,26 @@ async function checkPnpm() {
     return true
   }
 
-  // pnpm --version 失败 — 判断是签名/缓存错误还是真正未安装
+  // pnpm --version 失败 — 细分错误类型
   const errorOutput = result.output || ''
+
   const isSignatureError =
     errorOutput.includes('keyid') ||
     errorOutput.includes('signature') ||
     errorOutput.includes('Cannot find matching keyid') ||
     errorOutput.includes('verifySignature')
 
+  // Windows 上 corepack shim 路径解析错误（/d/ 被误解析到 C 盘）
+  const isCorpackPathError =
+    errorOutput.includes('MODULE_NOT_FOUND') ||
+    errorOutput.includes('Cannot find module') ||
+    errorOutput.includes('corepack')
+
   if (isSignatureError) {
     log('pnpm 存在但 corepack 签名验证失败', 'warn')
     log('正在尝试修复 corepack 缓存...')
     try {
       runCommand('corepack disable && corepack enable')
-      // 验证修复结果
       const verify = runCommandSafe('pnpm --version')
       if (verify.success) {
         log(`pnpm ${verify.output.trim()} 已恢复`, 'success')
@@ -222,8 +228,28 @@ async function checkPnpm() {
     } catch {
       // corepack disable/enable 失败，继续走安装流程
     }
-    // 修复失败，引导用户手动处理或重新安装
     log('自动修复失败，将尝试重新安装 pnpm', 'warn')
+  } else if (isCorpackPathError && IS_WINDOWS) {
+    // Windows 上 corepack shim 路径错误（Node.js 安装在非 C 盘时常见）
+    log('检测到 corepack 路径解析错误（Node.js 可能安装在非 C 盘）', 'warn')
+    log('正在禁用 corepack 并通过 npm 重新安装 pnpm...')
+    try {
+      runCommand('corepack disable pnpm')
+    } catch {
+      // corepack disable 失败不影响后续
+    }
+    try {
+      runCommand('npm install -g pnpm')
+      const verify = runCommandSafe('pnpm --version')
+      if (verify.success) {
+        log(`pnpm ${verify.output.trim()} 安装成功`, 'success')
+        return true
+      }
+    } catch (e) {
+      log('通过 npm 安装 pnpm 失败', 'warn')
+    }
+    log('自动修复失败，请手动运行：npm install -g pnpm', 'error')
+    return false
   } else {
     log('pnpm 未安装', 'warn')
   }
@@ -234,13 +260,18 @@ async function checkPnpm() {
     return false
   }
 
-  log('正在通过 corepack 安装 pnpm...')
+  log('正在通过 npm 安装 pnpm...')
   try {
-    runCommand('corepack enable && corepack prepare pnpm@latest --activate')
+    // Windows 优先用 npm 直接安装，避免 corepack 路径问题
+    if (IS_WINDOWS) {
+      runCommand('npm install -g pnpm')
+    } else {
+      runCommand('corepack enable && corepack prepare pnpm@latest --activate')
+    }
     log('pnpm 安装成功', 'success')
     return true
   } catch (error) {
-    log('通过 corepack 安装失败，尝试使用 npm...', 'warn')
+    log('安装失败，尝试备用方式...', 'warn')
     try {
       runCommand('npm install -g pnpm')
       log('pnpm 安装成功', 'success')
