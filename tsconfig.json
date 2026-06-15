@@ -39,6 +39,7 @@
     "node_modules",
     "opensrc",
     "packages",
+    "examples",
     "decompiled",
     "decompiled-ui",
     "CodeBuddy Code_decompiled",
