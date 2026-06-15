@@ -103,3 +103,4 @@ docs/marketing
 # OAK example 19a/19b 跨进程 handoff (临时,不入库)
 packages/open-agent-kernel/examples/.last-userid
 packages/open-agent-kernel/examples/config.local.json
+examples/kernel-beta-quickstart/config.local.json
