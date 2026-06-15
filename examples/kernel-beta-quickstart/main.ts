@@ -57,9 +57,7 @@ async function main(): Promise<void> {
           credentials: {
             secretId: config.credentials.secretId,
             secretKey: config.credentials.secretKey,
-            ...(config.credentials.sessionToken
-              ? { sessionToken: config.credentials.sessionToken }
-              : {}),
+            ...(config.credentials.sessionToken ? { sessionToken: config.credentials.sessionToken } : {}),
           },
         }
       : {}),
