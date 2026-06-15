@@ -1,0 +1,19 @@
+{
+  "name": "kernel-beta-quickstart",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "tsx main.ts",
+    "start:full": "tsx main.ts --full"
+  },
+  "dependencies": {
+    "@cloudbase/open-agent-kernel": "beta"
+  },
+  "devDependencies": {
+    "tsx": "^4.20.3",
+    "typescript": "^5.9.3"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}

@@ -647,7 +647,7 @@ admin.get('/tasks/:taskId', async (c) => {
       prNumber: task.prNumber,
       prStatus: task.prStatus,
       prMergeCommitSha: task.prMergeCommitSha,
-      mcpServerIds: task.mcpServerIds,
+      mcpServerList: task.mcpServerList,
       error: task.error,
       logs: task.logs,
       createdAt: task.createdAt,

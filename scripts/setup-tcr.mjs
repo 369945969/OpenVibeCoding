@@ -121,7 +121,8 @@ function runCommand(cmd, silent = false) {
       stdio: silent ? 'pipe' : 'inherit',
     })
   } catch (error) {
-    throw new Error(`Command failed: ${cmd}`)
+    const detail = error.stderr?.trim() || error.stdout?.trim() || error.message || ''
+    throw new Error(`Command failed: ${cmd}${detail ? '\n  ' + detail : ''}`)
   }
 }
 
@@ -292,7 +293,7 @@ async function installCloudbase() {
     log('cloudbase CLI 安装成功', 'success')
     return true
   } catch (error) {
-    log('Failed to install cloudbase CLI', 'error')
+    log(`Failed to install cloudbase CLI: ${error.message || error}`, 'error')
     return false
   }
 }
@@ -323,7 +324,7 @@ async function runCloudbaseLogin() {
     })
 
     child.on('error', (error) => {
-      log('Failed to run cloudbase login', 'error')
+      log(`Failed to run cloudbase login: ${error.message || error}`, 'error')
       resolve(false)
     })
   })
@@ -356,7 +357,7 @@ function getCloudbaseCredential() {
 
     return auth
   } catch (error) {
-    log('Failed to read cloudbase credential', 'warn')
+    log(`Failed to read cloudbase credential: ${error.message || error}`, 'warn')
     return null
   }
 }
@@ -382,8 +383,9 @@ async function getCloudbaseAccountId(secretId, secretKey) {
         // 主账号时 AccountId == Uin；子账号时 Uin 是子账号 UIN，AccountId 是主账号 AppID
         return { accountId: resp.AccountId, callerUin: resp.Uin || '' }
       }
-    } catch {
-      // ignore API errors, fall through to auth.json
+    } catch (err) {
+      // STS 查询失败，回退到 auth.json
+      console.warn(`[setup-tcr] STS.GetCallerIdentity failed: ${err.code || ''} ${err.message || err}`)
     }
   }
 
@@ -397,8 +399,8 @@ async function getCloudbaseAccountId(secretId, secretKey) {
         // 无法区分，统一作为 callerUin 使用
         return { accountId: '', callerUin: auth.credential.uin }
       }
-    } catch {
-      // ignore parse errors
+    } catch (err) {
+      console.warn(`[setup-tcr] Failed to parse cloudbase auth.json: ${err.message || err}`)
     }
   }
 
@@ -485,7 +487,8 @@ async function checkUserExists(client) {
     if (error.code === 'ResourceNotFound' || error.message?.includes('not found')) {
       return false
     }
-    // For other errors, assume user exists (let other operations handle the error)
+    // For other errors, log and assume user exists (let other operations handle the error)
+    console.warn(`[setup-tcr] checkUserExists unexpected error: ${error.code || ''} ${error.message || error}`)
     return true
   }
 }
@@ -509,7 +512,7 @@ async function initTcrPersonal(client, password) {
       log('TCR Personal Edition user already exists', 'warn')
       return { success: true, userExists: true }
     }
-    log('Failed to initialize TCR Personal Edition', 'error')
+    log(`Failed to initialize TCR Personal Edition: ${error.code || ''} ${error.message || error}`, 'error')
     return { success: false, userExists: false }
   }
 }
@@ -526,7 +529,7 @@ async function listNamespaces(client, prefix) {
     })
     return (result?.Data?.NamespaceInfo || []).map((ns) => ({ Namespace: ns.Namespace }))
   } catch (error) {
-    log('Failed to list namespaces', 'warn')
+    log(`Failed to list namespaces: ${error.code || ''} ${error.message || error}`, 'warn')
     return []
   }
 }
@@ -567,7 +570,7 @@ async function createNamespaceWithSuffix(client, prefix, maxRetries = 10) {
         log(`Namespace '${namespace}' already taken globally, trying another suffix...`, 'warn')
         continue
       }
-      log('Failed to create namespace', 'error')
+      log(`Failed to create namespace: ${error.code || ''} ${error.message || error}`, 'error')
       return null
     }
   }
@@ -605,7 +608,7 @@ async function listNamespacesEnterprise(client, registryId, prefix) {
       .filter(Boolean)
       .map((namespace) => ({ Namespace: namespace }))
   } catch (error) {
-    log('Failed to list enterprise namespaces', 'warn')
+    log(`Failed to list enterprise namespaces: ${error.code || ''} ${error.message || error}`, 'warn')
     return []
   }
 }
@@ -647,7 +650,7 @@ async function createNamespaceEnterpriseWithSuffix(client, registryId, prefix, m
         log('Enterprise namespace already exists, trying another suffix...', 'warn')
         continue
       }
-      log('Failed to create enterprise namespace', 'error')
+      log(`Failed to create enterprise namespace: ${error.code || ''} ${error.message || error}`, 'error')
       return null
     }
   }
@@ -688,7 +691,7 @@ async function ensureRepositoryEnterprise(client, registryId, namespace, repoNam
       return true
     }
   } catch (error) {
-    log('Failed to check enterprise repository, will try to create it', 'warn')
+    log(`Failed to check enterprise repository: ${error.code || ''} ${error.message || error}`, 'warn')
   }
 
   try {
@@ -704,7 +707,7 @@ async function ensureRepositoryEnterprise(client, registryId, namespace, repoNam
       log('Enterprise repository already exists', 'success')
       return true
     }
-    log('Failed to create enterprise repository', 'error')
+    log(`Failed to create enterprise repository: ${error.code || ''} ${error.message || error}`, 'error')
     return false
   }
 }
@@ -728,7 +731,7 @@ async function createInstanceTokenLongterm(client, registryId) {
     }
     return { username, token, tokenId }
   } catch (error) {
-    log('Failed to create TCR Enterprise instance token', 'error')
+    log(`Failed to create TCR Enterprise instance token: ${error.code || ''} ${error.message || error}`, 'error')
     return null
   }
 }
@@ -809,7 +812,7 @@ function pullImage(image) {
     log(`Image pulled successfully`, 'success')
     return true
   } catch (error) {
-    log(`Failed to pull image`, 'error')
+    log(`Failed to pull image: ${error.message || error}`, 'error')
     return false
   }
 }
@@ -822,7 +825,7 @@ function tagImage(sourceImage, targetImage) {
     log('Image tagged successfully', 'success')
     return true
   } catch (error) {
-    log('Failed to tag image', 'error')
+    log(`Failed to tag image: ${error.message || error}`, 'error')
     return false
   }
 }
@@ -835,7 +838,7 @@ function pushImage(image) {
     log(`Image pushed successfully`, 'success')
     return true
   } catch (error) {
-    log('Failed to push image', 'error')
+    log(`Failed to push image: ${error.message || error}`, 'error')
     return false
   }
 }
@@ -930,8 +933,7 @@ async function setupPermanentKey(config) {
     })
     log('cloudbase CLI 登录成功', 'success')
   } catch (e) {
-    log('cloudbase CLI 登录失败，请检查密钥是否正确', 'warn')
-    log(e.stderr || e.message || '', 'warn')
+    log(`cloudbase CLI 登录失败: ${e.stderr?.trim() || e.message || e}`, 'warn')
   }
 
   config.secretId = secretId
@@ -1426,8 +1428,8 @@ async function selectTcbEnv(config) {
       const parsed = JSON.parse(output.slice(jsonStart))
       envList = (parsed.data || []).filter(e => e.status === 'NORMAL')
     }
-  } catch {
-    log('Failed to fetch environment list', 'warn')
+  } catch (err) {
+    log(`Failed to fetch environment list: ${err.stderr?.trim() || err.message || err}`, 'warn')
   }
 
   if (envList.length === 0) {

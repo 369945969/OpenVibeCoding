@@ -1,14 +1,9 @@
-import type { Task } from '@coder/shared'
+import type { Task, McpServerConfig } from '@coder/shared'
+import type { Connector } from '@/lib/session/types'
 import { CloudDashboard } from '@coder/dashboard/CloudDashboard'
 import type { Theme } from '@coder/dashboard/CloudDashboard'
-
-interface Connector {
-  id: string
-  name: string
-  baseUrl?: string | null
-  command?: string | null
-}
 import { Button } from '@/components/ui/button'
+import { Card } from '@/components/ui/card'
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip'
 import {
   GitBranch,
@@ -40,12 +35,14 @@ import {
   Minimize,
   AlertTriangle,
   Cloud,
+  Pencil,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { useTheme } from 'next-themes'
-import { useAtomValue } from 'jotai'
+import { useAtomValue, useSetAtom } from 'jotai'
 import { sessionAtom } from '@/lib/atoms/session'
+import { setEditingConnectorActionAtom } from '@/lib/atoms/connector-dialog'
 import { toast } from 'sonner'
 import { Claude, CodeBuddy, Codex, Copilot, Cursor, Gemini, OpenCode } from '@/components/logos'
 import { useTasks } from '@/components/app-layout'
@@ -68,6 +65,7 @@ import { FileDiffViewer } from '@/components/file-diff-viewer'
 import { CreatePRDialog } from '@/components/create-pr-dialog'
 import { MergePRDialog } from '@/components/merge-pr-dialog'
 import { TaskChat, useChatStream } from '@coder/chat-core'
+import { ConnectorDialog } from '@/components/connectors/manage-connectors'
 import { BrowserControls } from '@/components/preview/browser-controls'
 import { PreviewPlaceholder } from '@/components/preview/preview-placeholder'
 import { useAutoFix } from '@/hooks/use-auto-fix'
@@ -267,8 +265,12 @@ export function TaskDetails({
   }, [initialPrompt, initialImages, onInitialPromptConsumed, chatStream.sendInitialPrompt])
 
   const [optimisticStatus, setOptimisticStatus] = useState<Task['status'] | null>(null)
-  const [mcpServers, setMcpServers] = useState<Connector[]>([])
+  const [mcpServers, setMcpServers] = useState<McpServerConfig[]>([])
   const [loadingMcpServers, setLoadingMcpServers] = useState(false)
+  const { refreshTasks } = useTasks()
+  const [showTaskMcpDialog, setShowTaskMcpDialog] = useState(false)
+  const [showConnectorDialog, setShowConnectorDialog] = useState(false)
+  const setEditingConnectorAction = useSetAtom(setEditingConnectorActionAtom)
   const [diffsCache, setDiffsCache] = useState<Record<string, DiffData>>({})
   const loadingDiffsRef = useRef(false)
   const [refreshKey, setRefreshKey] = useState(0)
@@ -667,7 +669,6 @@ export function TaskDetails({
   const fileSearchRef = useRef<HTMLDivElement>(null)
   const tabsContainerRef = useRef<HTMLDivElement>(null)
   const tabButtonRefs = useRef<{ [key: string]: HTMLButtonElement | null }>({})
-  const { refreshTasks } = useTasks()
   const navigate = useNavigate()
 
   // Tabs state for Code pane - each mode has its own tabs and selection
@@ -1164,10 +1165,10 @@ export function TaskDetails({
   }
 
   // Function to determine which icon to show for a connector
-  const getConnectorIcon = (connector: Connector) => {
-    const lowerName = connector.name.toLowerCase()
-    const url = connector.baseUrl?.toLowerCase() || ''
-    const cmd = connector.command?.toLowerCase() || ''
+  const getConnectorIcon = (server: McpServerConfig) => {
+    const lowerName = server.name?.toLowerCase() || ''
+    const url = server.baseUrl?.toLowerCase() || ''
+    const cmd = server.command?.toLowerCase() || ''
 
     // Check by name, URL, or command
     if (lowerName.includes('browserbase') || cmd.includes('browserbasehq') || cmd.includes('@browserbasehq/mcp')) {
@@ -1202,33 +1203,74 @@ export function TaskDetails({
     return <Server className="h-6 w-6 flex-shrink-0 text-muted-foreground" />
   }
 
-  // Fetch MCP servers if task has mcpServerIds (only when IDs actually change)
-  useEffect(() => {
-    async function fetchMcpServers() {
-      if (!task.mcpServerIds || task.mcpServerIds.length === 0) {
-        return
-      }
+  const persistTaskMcpServers = async (next: McpServerConfig[]) => {
+    const response = await fetch(`/api/tasks/${task.id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'update-mcp-servers', mcpServerList: next }),
+    })
 
-      setLoadingMcpServers(true)
-
-      try {
-        const response = await fetch('/api/connectors')
-        if (response.ok) {
-          const result = await response.json()
-          const taskMcpServers = result.data.filter((c: Connector) => task.mcpServerIds?.includes(c.id))
-          setMcpServers(taskMcpServers)
-        }
-      } catch (error) {
-        console.error('Failed to fetch MCP servers:', error)
-      } finally {
-        setLoadingMcpServers(false)
-      }
+    if (!response.ok) {
+      throw new Error('Failed to update MCP servers')
     }
 
-    fetchMcpServers()
-    // Use JSON.stringify to create stable dependency - only re-run when IDs actually change
+    await refreshTasks()
+  }
+
+  const handleRemoveMcpServer = async (serverIndex: number) => {
+    const previous = mcpServers
+    const next = mcpServers.filter((_, index) => index !== serverIndex)
+    setMcpServers(next)
+    try {
+      await persistTaskMcpServers(next)
+      toast.success('MCP server removed')
+    } catch {
+      setMcpServers(previous)
+      toast.error('Failed to update MCP servers')
+    }
+  }
+
+  const handleEditMcpServer = (server: McpServerConfig) => {
+    setEditingConnectorAction(server as any)
+    setShowTaskMcpDialog(false)
+    setShowConnectorDialog(true)
+  }
+
+  const handleConnectorSaved = async (connector: Connector) => {
+    const config: McpServerConfig = {
+      name: connector.name,
+      description: connector.description,
+      type: connector.type,
+      baseUrl: connector.baseUrl,
+      command: connector.command,
+      args: connector.args,
+      headers: connector.headers,
+    }
+    const previous = mcpServers
+    const exists = mcpServers.some((s) => s.name === config.name)
+    const next = exists ? mcpServers.map((s) => (s.name === config.name ? config : s)) : [...mcpServers, config]
+    setMcpServers(next)
+    try {
+      await persistTaskMcpServers(next)
+      setShowConnectorDialog(false)
+    } catch {
+      setMcpServers(previous)
+      toast.error('Failed to update MCP servers')
+    }
+  }
+
+  // Fetch MCP servers if task has mcpServerList (only when IDs actually change)
+  useEffect(() => {
+    if (!task.mcpServerList || task.mcpServerList.length === 0) {
+      setMcpServers([])
+      return
+    }
+
+    setLoadingMcpServers(true)
+    setMcpServers(task.mcpServerList ?? [])
+    setLoadingMcpServers(false)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [JSON.stringify(task.mcpServerIds)])
+  }, [JSON.stringify(task.mcpServerList)])
 
   // Fetch deployment info when task is completed and has a branch (only if not already cached)
   useEffect(() => {
@@ -2173,30 +2215,18 @@ export function TaskDetails({
           )}
 
           {/* MCP Servers */}
-          {!loadingMcpServers && mcpServers.length > 0 && (
-            <TooltipProvider>
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <div className="flex items-center gap-1.5 md:gap-2 cursor-help text-muted-foreground">
-                    <Cable className="h-3.5 w-3.5 md:h-4 md:w-4 flex-shrink-0" />
-                    <span className="hidden sm:inline">
-                      {mcpServers.length} MCP Server{mcpServers.length !== 1 ? 's' : ''}
-                    </span>
-                    <span className="sm:hidden">{mcpServers.length} MCP</span>
-                  </div>
-                </TooltipTrigger>
-                <TooltipContent side="bottom" className="max-w-xs">
-                  <div className="space-y-1">
-                    {mcpServers.map((server) => (
-                      <div key={server.id} className="flex items-center gap-1.5">
-                        {getConnectorIcon(server)}
-                        <span>{server.name}</span>
-                      </div>
-                    ))}
-                  </div>
-                </TooltipContent>
-              </Tooltip>
-            </TooltipProvider>
+          {!loadingMcpServers && (
+            <button
+              type="button"
+              onClick={() => setShowTaskMcpDialog(true)}
+              className="flex items-center gap-1.5 md:gap-2 text-muted-foreground hover:text-foreground transition-colors"
+            >
+              <Cable className="h-3.5 w-3.5 md:h-4 md:w-4 flex-shrink-0" />
+              <span className="hidden sm:inline">
+                {mcpServers.length} MCP Server{mcpServers.length !== 1 ? 's' : ''}
+              </span>
+              <span className="sm:hidden">{mcpServers.length} MCP</span>
+            </button>
           )}
 
           {/* Desktop Pane Toggles - Only show on desktop */}
@@ -3646,6 +3676,77 @@ export function TaskDetails({
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+
+      {/* Task MCP Servers Dialog */}
+      <Dialog open={showTaskMcpDialog} onOpenChange={setShowTaskMcpDialog}>
+        <DialogContent className="w-[600px] max-w-[90vw] max-h-[80vh] overflow-hidden">
+          <DialogHeader>
+            <DialogTitle>Task MCP Servers</DialogTitle>
+            <DialogDescription>Manage MCP servers for this task.</DialogDescription>
+          </DialogHeader>
+          <div className="space-y-3 py-4 overflow-y-auto flex-1 max-h-[60vh]">
+            {mcpServers.length === 0 ? (
+              <Card className="p-6 text-center">
+                <p className="text-sm text-muted-foreground">No MCP servers configured for this task.</p>
+              </Card>
+            ) : (
+              mcpServers.map((server, index) => (
+                <Card
+                  key={`${server.type}-${server.baseUrl ?? server.name ?? index}`}
+                  className="flex flex-row items-center justify-between p-3"
+                >
+                  <div className="flex items-center space-x-3 flex-1 min-w-0">
+                    {getConnectorIcon(server)}
+                    <div className="flex-1 min-w-0">
+                      <h4 className="font-semibold text-sm">{server.name || server.baseUrl || server.type}</h4>
+                      {server.description && (
+                        <p className="text-xs text-muted-foreground truncate">{server.description}</p>
+                      )}
+                      {server.baseUrl && server.name && (
+                        <p className="text-xs text-muted-foreground truncate">{server.baseUrl}</p>
+                      )}
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-1">
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="icon"
+                      className="h-8 w-8"
+                      onClick={() => handleEditMcpServer(server)}
+                    >
+                      <Pencil className="h-4 w-4 text-muted-foreground" />
+                    </Button>
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="icon"
+                      className="h-8 w-8"
+                      onClick={() => handleRemoveMcpServer(index)}
+                    >
+                      <Trash2 className="h-4 w-4 text-muted-foreground" />
+                    </Button>
+                  </div>
+                </Card>
+              ))
+            )}
+            <div className="flex justify-end pt-4">
+              <Button type="button" variant="default" onClick={() => setShowConnectorDialog(true)}>
+                <Plus className="h-4 w-4 mr-2" />
+                Add MCP Server
+              </Button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      <ConnectorDialog
+        open={showConnectorDialog}
+        onOpenChange={setShowConnectorDialog}
+        onConnectorSaved={handleConnectorSaved}
+        onCancelEdit={() => setShowTaskMcpDialog(true)}
+        initialView="presets"
+      />
     </div>
   )
 }

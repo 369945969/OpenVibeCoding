@@ -168,6 +168,36 @@ export class ScfSandboxManager {
   }
 
   private cachedAccessToken: { token: string; expiry: number } | null = null
+  private cachedDefaultDomain: { domain: string; expiry: number } | null = null
+
+  /**
+   * 从 DescribeCloudBaseGWService 获取环境的 DefaultDomain（含正确的 UIN 后缀和 region），
+   * 缓存 1 小时，替代所有 `${envId}.ap-shanghai.app.tcloudbase.com` 硬拼接。
+   */
+  async getDefaultDomain(): Promise<string> {
+    const envConfig = this.getEnvConfig()
+    return `${envConfig.envId}.service.tcloudbase.com`
+    const now = Date.now()
+    if (this.cachedDefaultDomain && this.cachedDefaultDomain.expiry > now) {
+      return this.cachedDefaultDomain.domain
+    }
+
+    const app = new CloudBase({
+      secretId: envConfig.secretId,
+      secretKey: envConfig.secretKey,
+      token: envConfig.token,
+      envId: envConfig.envId,
+    })
+
+    const res = (await (app.commonService() as any).call({
+      Action: 'DescribeCloudBaseGWService',
+      Param: { EnableRegion: true, EnableUnion: true, ServiceId: envConfig.envId },
+    })) as { DefaultDomain?: string }
+
+    const domain = res.DefaultDomain || `${envConfig.envId}.ap-shanghai.app.tcloudbase.com`
+    this.cachedDefaultDomain = { domain, expiry: now + 3600_000 }
+    return domain
+  }
 
   private getEnvConfig() {
     const imageType = process.env.SANDBOX_IMAGE_TYPE || process.env.SCF_SANDBOX_IMAGE_TYPE || 'personal'
@@ -518,14 +548,14 @@ export class ScfSandboxManager {
     const envConfig = this.getEnvConfig()
 
     try {
+      const domain = await this.getDefaultDomain()
+
       const app = new CloudBase({
         secretId: envConfig.secretId,
         secretKey: envConfig.secretKey,
         token: envConfig.token,
         envId: envConfig.envId,
       })
-
-      const domain = `${envConfig.envId}.ap-shanghai.app.tcloudbase.com`
 
       await (app.commonService() as any).call({
         Action: 'CreateCloudBaseGWAPI',
@@ -566,8 +596,7 @@ export class ScfSandboxManager {
   private gatewayEnsuredFunctions = new Set<string>()
 
   async ensurePreviewGateway(sandbox: SandboxInstance): Promise<string> {
-    const envConfig = this.getEnvConfig()
-    const domain = `${envConfig.envId}.service.tcloudbase.com`
+    const domain = await this.getDefaultDomain()
     const previewBase = `https://${domain}/preview`
 
     const functionName = sandbox.functionName

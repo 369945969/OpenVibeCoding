@@ -295,7 +295,7 @@ tasksRouter.get('/', async (c) => {
   const parsedTasks = userTasks.map((t) => ({
     ...t,
     logs: t.logs ? JSON.parse(t.logs) : [],
-    mcpServerIds: t.mcpServerIds ? JSON.parse(t.mcpServerIds) : null,
+    mcpServerList: t.mcpServerList ? JSON.parse(t.mcpServerList) : null,
   }))
   return c.json({ tasks: parsedTasks })
 })
@@ -317,6 +317,7 @@ tasksRouter.post('/', async (c) => {
     maxDuration = 300,
     keepAlive = false,
     enableBrowser = false,
+    mcpServerList,
   } = body
   if (!prompt || typeof prompt !== 'string') return c.json({ error: 'prompt is required' }, 400)
 
@@ -478,14 +479,14 @@ tasksRouter.post('/', async (c) => {
     prNumber: null,
     prStatus: null,
     prMergeCommitSha: null,
-    mcpServerIds: null,
+    mcpServerList: mcpServerList ? JSON.stringify(mcpServerList) : null,
     personalGitInfo: null,
     createdAt: now,
     updatedAt: now,
   })
 
   const newTask = await getDb().tasks.findById(taskId)
-  return c.json({ task: { ...newTask, logs: [], mcpServerIds: null } })
+  return c.json({ task: { ...newTask, logs: [], mcpServerList: null } })
 })
 
 // Get single task
@@ -500,7 +501,7 @@ tasksRouter.get('/:taskId', async (c) => {
     task: {
       ...task,
       logs: task.logs ? JSON.parse(task.logs) : [],
-      mcpServerIds: task.mcpServerIds ? JSON.parse(task.mcpServerIds) : null,
+      mcpServerList: task.mcpServerList ? JSON.parse(task.mcpServerList) : null,
     },
   })
 })
@@ -523,6 +524,34 @@ tasksRouter.patch('/:taskId', async (c) => {
     const updated = await getDb().tasks.findById(taskId)
     return c.json({ message: 'Task stopped', task: updated })
   }
+
+  if (body.action === 'update-mcp-servers') {
+    const mcpServerList = Array.isArray(body.mcpServerList)
+      ? body.mcpServerList.map((server) => ({
+          name: server?.name,
+          description: server?.description ?? null,
+          type: server?.type,
+          baseUrl: server?.baseUrl ?? null,
+          command: server?.command ?? null,
+          args: server?.args ?? null,
+          headers: server?.headers ?? null,
+        }))
+      : null
+    await getDb().tasks.update(taskId, {
+      mcpServerList: mcpServerList ? JSON.stringify(mcpServerList) : null,
+      updatedAt: Date.now(),
+    })
+    const updated = await getDb().tasks.findById(taskId)
+    return c.json({
+      message: 'MCP servers updated',
+      task: {
+        ...updated,
+        logs: updated?.logs ? JSON.parse(updated.logs) : [],
+        mcpServerList: updated?.mcpServerList ? JSON.parse(updated.mcpServerList) : null,
+      },
+    })
+  }
+
   return c.json({ error: 'Invalid action' }, 400)
 })
 
@@ -2311,178 +2340,6 @@ tasksRouter.get('/:taskId/sandbox-health', requireUserEnv, async (c) => {
 // GET /:taskId/preview-health — 检查 dev server 是否实际响应（via /api/scope/info）
 // ---------------------------------------------------------------------------
 
-// TEMP: GET /:taskId/container-probe — diagnostic for multi-instance routing.
-// 调用 N 次 /health（SCF 直连）+ N 次 /preview/{port}/（公网 gateway），各自
-// 拿到 container 身份：
-//   - SCF 直连：通过 /health body 的 instance.id 或 X-Sandbox-Instance 响应头
-//   - 公网 gateway (502)：通过 problem body 的 sandbox_instance 或响应头
-// 比较两侧 container id 集合是否相同，判断 502 是否由跨 container 路由导致。
-tasksRouter.get('/:taskId/container-probe', requireUserEnv, async (c) => {
-  try {
-    const session = c.get('session')!
-    const { envId } = c.get('userEnv')!
-    const { taskId } = c.req.param()
-    const task = await findActiveTask(taskId, session.user.id)
-    if (!task) return c.json({ error: 'not_found' }, 404)
-    if (!task.sandboxId) return c.json({ error: 'no_sandbox' }, 400)
-
-    const taskMode = (task as any).mode as string | null | undefined
-    const isCodingMode = taskMode === 'coding'
-    const sandboxConfig = resolveSandboxConfig({
-      sandboxMode: task.sandboxMode,
-      sandboxSessionId: task.sandboxSessionId,
-      sandboxCwd: task.sandboxCwd,
-      envId,
-      taskId,
-    })
-    const sandbox = await getScfSandbox(task, envId, {
-      sandboxMode: sandboxConfig.sandboxMode,
-      isCodingMode,
-    })
-    if (!sandbox) return c.json({ error: 'no_sandbox_instance' }, 400)
-
-    // Keep N small + add spacing to avoid SCF gateway rate-limiting (HTTP 430)
-    const N = 3
-    const SPACING_MS = 400
-    const resolvedSessionId = sandboxConfig.sandboxSessionId
-
-    type IdResult = {
-      ok: boolean
-      sandboxInstance?: string
-      sandboxPid?: number
-      sandboxBoot?: string
-      status?: number
-      requestId?: string
-      detail?: string
-      err?: string
-      // image version hints
-      hasSandboxInstanceHeader?: boolean
-      hasSandboxInstanceBody?: boolean
-    }
-
-    // 1) SCF 直连 /health
-    const directResults: IdResult[] = []
-    for (let i = 0; i < N; i++) {
-      try {
-        const r = await sandbox.request('/health', { signal: AbortSignal.timeout(8_000) })
-        const headerInstance = r.headers.get('x-sandbox-instance') || undefined
-        const headerPid = r.headers.get('x-sandbox-pid')
-        const headerBoot = r.headers.get('x-sandbox-boot') || undefined
-        if (r.ok) {
-          const j = (await r.json()) as {
-            instance?: { id?: string; pid?: number; bootTime?: string }
-          }
-          directResults.push({
-            ok: true,
-            sandboxInstance: j.instance?.id ?? headerInstance,
-            sandboxPid: j.instance?.pid ?? (headerPid ? Number(headerPid) : undefined),
-            sandboxBoot: j.instance?.bootTime ?? headerBoot,
-            status: r.status,
-            hasSandboxInstanceHeader: !!headerInstance,
-            hasSandboxInstanceBody: !!j.instance?.id,
-          })
-        } else {
-          directResults.push({
-            ok: false,
-            status: r.status,
-            sandboxInstance: headerInstance,
-            sandboxPid: headerPid ? Number(headerPid) : undefined,
-            sandboxBoot: headerBoot,
-            hasSandboxInstanceHeader: !!headerInstance,
-          })
-        }
-      } catch (e) {
-        directResults.push({ ok: false, err: (e as Error).message })
-      }
-      await new Promise((r) => setTimeout(r, SPACING_MS))
-    }
-
-    // 2) 公网 gateway /preview/{port}/ — 预期 502，从 problem body 提取 sandbox_instance
-    const sandboxEnvId = process.env.TCB_ENV_ID || ''
-    const publicResults: IdResult[] = []
-    for (let i = 0; i < N; i++) {
-      try {
-        let url = `https://${sandboxEnvId}.ap-shanghai.app.tcloudbase.com/preview/5173/?cloudbase_session_id=${resolvedSessionId}`
-        if (sandboxConfig.sandboxMode === 'shared') url += `&scope_id=${taskId}`
-        if (isCodingMode) url += `&scope_template=coding`
-        const r = await fetch(url, { signal: AbortSignal.timeout(8_000) })
-        const body = await r.text()
-        const headerInstance = r.headers.get('x-sandbox-instance') || undefined
-        const headerPid = r.headers.get('x-sandbox-pid')
-        const headerBoot = r.headers.get('x-sandbox-boot') || undefined
-        let bodyInstance: string | undefined
-        let bodyPid: number | undefined
-        let bodyBoot: string | undefined
-        let detail: string | undefined
-        try {
-          const parsed = JSON.parse(body) as {
-            sandbox_instance?: string
-            sandbox_pid?: number
-            sandbox_boot?: string
-            detail?: string
-          }
-          bodyInstance = parsed.sandbox_instance
-          bodyPid = parsed.sandbox_pid
-          bodyBoot = parsed.sandbox_boot
-          detail = parsed.detail
-        } catch {
-          /* non-json body */
-        }
-        publicResults.push({
-          ok: r.ok,
-          status: r.status,
-          sandboxInstance: bodyInstance ?? headerInstance,
-          sandboxPid: bodyPid ?? (headerPid ? Number(headerPid) : undefined),
-          sandboxBoot: bodyBoot ?? headerBoot,
-          requestId: r.headers.get('x-cloudbase-request-id') || undefined,
-          detail,
-          hasSandboxInstanceHeader: !!headerInstance,
-          hasSandboxInstanceBody: !!bodyInstance,
-        })
-      } catch (e) {
-        publicResults.push({ ok: false, status: 0, err: (e as Error).message })
-      }
-      await new Promise((r) => setTimeout(r, SPACING_MS))
-    }
-
-    const uniqueIds = (arr: IdResult[]) =>
-      Array.from(new Set(arr.map((r) => r.sandboxInstance).filter((x): x is string => !!x)))
-
-    const directIds = uniqueIds(directResults)
-    const publicIds = uniqueIds(publicResults)
-    const overlap = directIds.filter((id) => publicIds.includes(id))
-
-    let conclusion: string
-    if (directIds.length === 0 && publicIds.length === 0) {
-      conclusion =
-        'insufficient_data: neither side returned sandbox container id — sandbox image likely needs rebuild to include X-Sandbox-Instance headers'
-    } else if (directIds.length === 0 || publicIds.length === 0) {
-      conclusion = `insufficient_data: only one side returned container id (direct=${directIds.length}, public=${publicIds.length})`
-    } else if (overlap.length === 0) {
-      conclusion = 'cross_container_confirmed: SCF direct and public gateway land on disjoint sandbox containers'
-    } else if (directIds.length === 1 && publicIds.length === 1 && overlap.length === 1) {
-      conclusion = 'same_container: both paths hit the same container — 502 cause is NOT cross-container routing'
-    } else {
-      conclusion = 'partial_overlap: mixed routing — some requests share containers, some do not'
-    }
-
-    return c.json({
-      resolvedSessionId,
-      scopeId: taskId,
-      summary: {
-        directUniqueContainers: directIds,
-        publicUniqueContainers: publicIds,
-        overlap,
-        conclusion,
-      },
-      directResults,
-      publicResults,
-    })
-  } catch (error) {
-    return c.json({ error: (error as Error).message }, 500)
-  }
-})
-
 tasksRouter.get('/:taskId/preview-health', requireUserEnv, async (c) => {
   try {
     const session = c.get('session')!
@@ -2896,8 +2753,8 @@ tasksRouter.get('/:taskId/preview-url', requireUserEnv, async (c) => {
       try {
         previewBase = await scfSandboxManager.ensurePreviewGateway(sandbox!)
       } catch {
-        const sandboxEnvId = process.env.TCB_ENV_ID || ''
-        previewBase = `https://${sandboxEnvId}.ap-shanghai.app.tcloudbase.com/preview`
+        const fallbackDomain = await scfSandboxManager.getDefaultDomain()
+        previewBase = `https://${fallbackDomain}/preview`
       }
 
       // Build gateway URL with scope query params
@@ -2977,8 +2834,8 @@ tasksRouter.get('/:taskId/preview-errors', requireUserEnv, async (c) => {
     }
 
     // 2) 构造公网 gateway URL（与 iframe 同路径），拉 __dev_errors
-    const sandboxEnvId = process.env.TCB_ENV_ID || ''
-    const previewBase = `https://${sandboxEnvId}.ap-shanghai.app.tcloudbase.com/preview`
+    const fallbackDomain = await scfSandboxManager.getDefaultDomain()
+    const previewBase = `https://${fallbackDomain}/preview`
     const resolvedSessionId = sandboxConfig.sandboxSessionId
     let devErrorsUrl = `${previewBase}/${vitePort}/__dev_errors?cloudbase_session_id=${resolvedSessionId}`
     if (sandboxConfig.sandboxMode === 'shared') devErrorsUrl += `&scope_id=${taskId}`
