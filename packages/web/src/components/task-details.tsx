@@ -1,8 +1,7 @@
-import type { Task } from '@coder/shared'
+import type { Task, McpServerConfig } from '@coder/shared'
+import type { Connector } from '@/lib/session/types'
 import { CloudDashboard } from '@coder/dashboard/CloudDashboard'
 import type { Theme } from '@coder/dashboard/CloudDashboard'
-
-import type { Connector } from '@/lib/session/types'
 import { Button } from '@/components/ui/button'
 import { Card } from '@/components/ui/card'
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip'
@@ -267,7 +266,7 @@ export function TaskDetails({
   }, [initialPrompt, initialImages, onInitialPromptConsumed, chatStream.sendInitialPrompt])
 
   const [optimisticStatus, setOptimisticStatus] = useState<Task['status'] | null>(null)
-  const [mcpServers, setMcpServers] = useState<Connector[]>([])
+  const [mcpServers, setMcpServers] = useState<McpServerConfig[]>([])
   const [loadingMcpServers, setLoadingMcpServers] = useState(false)
   const { refreshTasks } = useTasks()
   const [showTaskMcpDialog, setShowTaskMcpDialog] = useState(false)
@@ -1167,10 +1166,10 @@ export function TaskDetails({
   }
 
   // Function to determine which icon to show for a connector
-  const getConnectorIcon = (connector: Connector) => {
-    const lowerName = connector.name?.toLowerCase() || ''
-    const url = connector.baseUrl?.toLowerCase() || ''
-    const cmd = connector.command?.toLowerCase() || ''
+  const getConnectorIcon = (server: McpServerConfig) => {
+    const lowerName = server.name?.toLowerCase() || ''
+    const url = server.baseUrl?.toLowerCase() || ''
+    const cmd = server.command?.toLowerCase() || ''
 
     // Check by name, URL, or command
     if (lowerName.includes('browserbase') || cmd.includes('browserbasehq') || cmd.includes('@browserbasehq/mcp')) {
@@ -1205,20 +1204,11 @@ export function TaskDetails({
     return <Server className="h-6 w-6 flex-shrink-0 text-muted-foreground" />
   }
 
-  const persistTaskMcpServers = async (next: Connector[]) => {
-    const mcpServerList = next.map((server) => ({
-      name: server.name,
-      description: server.description ?? null,
-      type: server.type,
-      baseUrl: server.baseUrl ?? null,
-      command: server.command ?? null,
-      args: server.args ?? null,
-      headers: server.headers ?? null,
-    }))
+  const persistTaskMcpServers = async (next: McpServerConfig[]) => {
     const response = await fetch(`/api/tasks/${task.id}`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ action: 'update-mcp-servers', mcpServerList }),
+      body: JSON.stringify({ action: 'update-mcp-servers', mcpServerList: next }),
     })
 
     if (!response.ok) {
@@ -1241,18 +1231,25 @@ export function TaskDetails({
     }
   }
 
-  const handleEditMcpServer = (server: Connector) => {
-    setEditingConnectorAction(server)
+  const handleEditMcpServer = (server: McpServerConfig) => {
+    setEditingConnectorAction(server as any)
     setShowTaskMcpDialog(false)
     setShowConnectorDialog(true)
   }
 
   const handleConnectorSaved = async (connector: Connector) => {
+    const config: McpServerConfig = {
+      name: connector.name,
+      description: connector.description,
+      type: connector.type,
+      baseUrl: connector.baseUrl,
+      command: connector.command,
+      args: connector.args,
+      headers: connector.headers,
+    }
     const previous = mcpServers
-    const exists = mcpServers.some((s) => s.name === connector.name)
-    const next = exists
-      ? mcpServers.map((s) => (s.name === connector.name ? connector : s))
-      : [...mcpServers, connector]
+    const exists = mcpServers.some((s) => s.name === config.name)
+    const next = exists ? mcpServers.map((s) => (s.name === config.name ? config : s)) : [...mcpServers, config]
     setMcpServers(next)
     try {
       await persistTaskMcpServers(next)
@@ -1271,7 +1268,7 @@ export function TaskDetails({
     }
 
     setLoadingMcpServers(true)
-    setMcpServers(task.mcpServerList as Connector[])
+    setMcpServers(task.mcpServerList ?? [])
     setLoadingMcpServers(false)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [JSON.stringify(task.mcpServerList)])

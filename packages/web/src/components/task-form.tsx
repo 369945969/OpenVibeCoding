@@ -365,7 +365,7 @@ export function TaskForm({
         maxDuration,
         keepAlive,
         enableBrowser,
-        mcpServerList: connectedMcps.length > 0 ? connectedMcps : undefined,
+        mcpServerList: connectedMcps.length > 0 ? (connectedMcps as any) : undefined,
         imageBlocks:
           pendingImages.length > 0 ? pendingImages.map(({ data, mimeType }) => ({ data, mimeType })) : undefined,
       })
@@ -429,7 +429,7 @@ export function TaskForm({
       maxDuration,
       keepAlive,
       enableBrowser,
-      mcpServerList: connectedMcps.length > 0 ? connectedMcps : undefined,
+      mcpServerList: connectedMcps.length > 0 ? (connectedMcps as any) : undefined,
       imageBlocks:
         pendingImages.length > 0 ? pendingImages.map(({ data, mimeType }) => ({ data, mimeType })) : undefined,
     })

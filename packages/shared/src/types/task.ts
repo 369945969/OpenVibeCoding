@@ -9,6 +9,20 @@ export const logEntrySchema = z.object({
 
 export type LogEntry = z.infer<typeof logEntrySchema>
 
+// ─── MCP Server Config ───────────────────────────────────────────────────────
+
+export const mcpServerConfigSchema = z.object({
+  name: z.string(),
+  description: z.string().nullable().optional(),
+  type: z.enum(['HTTP', 'SSE', 'STDIO']),
+  baseUrl: z.string().nullable().optional(),
+  command: z.string().nullable().optional(),
+  args: z.array(z.string()).nullable().optional(),
+  headers: z.record(z.string(), z.string()).nullable().optional(),
+})
+
+export type McpServerConfig = z.infer<typeof mcpServerConfigSchema>
+
 // ─── Tasks ───────────────────────────────────────────────────────────────────
 
 export const insertTaskSchema = z.object({
@@ -41,7 +55,7 @@ export const insertTaskSchema = z.object({
   prNumber: z.number().optional(),
   prStatus: z.enum(['open', 'closed', 'merged']).optional(),
   prMergeCommitSha: z.string().optional(),
-  mcpServerList: z.array(z.record(z.unknown())).optional(),
+  mcpServerList: z.array(mcpServerConfigSchema).optional(),
   createdAt: z.number().optional(),
   updatedAt: z.number().optional(),
   completedAt: z.number().optional(),
@@ -78,7 +92,7 @@ export const selectTaskSchema = z.object({
   prNumber: z.number().nullable(),
   prStatus: z.enum(['open', 'closed', 'merged']).nullable(),
   prMergeCommitSha: z.string().nullable(),
-  mcpServerList: z.array(z.record(z.unknown())).nullable(),
+  mcpServerList: z.array(mcpServerConfigSchema).nullable(),
   createdAt: z.number(),
   updatedAt: z.number(),
   completedAt: z.number().nullable(),
