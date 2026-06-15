@@ -1,0 +1,898 @@
+/**
+ * Public TypeScript types for @cloudbase/open-agent-kernel
+ *
+ * 这些类型是 SDK 对外的稳定契约，任何修改需要走 semver 流程。
+ * 内部实现位于 src/runtime/, src/resources/, src/session-store/ 等模块，
+ * 不导出给用户。
+ */
+
+import type { McpServerConfig as SdkMcpServerConfig } from '@anthropic-ai/claude-agent-sdk'
+import type { z } from 'zod'
+
+/**
+ * 平台凭证，用于初始化 CloudBase 管理端/服务端 SDK。
+ *
+ * kernel 不从 `process.env` 读取平台凭证；示例或业务代码可自行从环境变量加载后，
+ * 通过 `createAgent({ credentials })` 显式传入。
+ */
+export interface PlatformCredentials {
+  /** CloudBase 环境 ID；不传时默认继承 AgentConfig.envId */
+  envId?: string
+  secretId: string
+  secretKey: string
+  /** STS 临时凭证 token（可选） */
+  sessionToken?: string
+  /** 默认 ap-shanghai */
+  region?: string
+}
+
+// ============================================================
+// 模型配置
+// ============================================================
+
+/**
+ * 模型可以是简单字符串（kernel 自动派生 baseUrl + key），
+ * 或完整 ModelSpec（用户自带 key 场景）
+ */
+export type ModelInput = string | ModelSpec
+
+export interface ModelSpec {
+  /** 模型 ID，如 'hunyuan-t1-latest' / 'deepseek-v3.2' / 'gpt-5' */
+  id: string
+  /** 不传则走 CloudBase 网关代理（计费走平台）；传则用自带 key */
+  apiKey?: string
+  /** 自带 key 时的 endpoint */
+  apiBaseUrl?: string
+  /** 透传到底层 provider 的额外选项 */
+  options?: Record<string, unknown>
+}
+
+// ============================================================
+// Sandbox 配置（Claude Agent SDK 文件系统/Shell/Skills/Memory/Compaction 能力封装）
+// ============================================================
+
+export interface SandboxConfig {
+  /**
+   * 是否启用默认 sandbox。
+   *
+   * - `true`：使用内置默认 provider（当前为 `ags-stateful`），并补齐默认 runtime/scope
+   * - `false` / 未配置 sandbox：不启用 sandbox
+   *
+   * 如果显式传了 `runtime`，即使不传 `enabled` 也会启用 sandbox。
+   */
+  enabled?: boolean
+  /**
+   * 默认 sandbox 产品类型。当前仅内置 `ags-stateful`。
+   *
+   * 未来可扩展到其他 CloudBase/第三方 sandbox 产品；高级用户也可直接传 `runtime`。
+   */
+  provider?: 'ags-stateful'
+  /**
+   * 默认 AGS 数据面认证 JWT。
+   *
+   * 仅在 `enabled: true` 且未显式传 `runtime` 时用于构造默认 AgsStatefulSandbox。
+   * 不传时读取 `TCB_API_KEY` 或 `OAK_SANDBOX_API_KEY`。
+   */
+  apiKey?: string
+  /**
+   * Sandbox 后端实例（由用户从 `@cloudbase/open-agent-kernel/sandbox` 子模块构造，
+   * 例如 `new AgsStatefulSandbox()`）。
+   * 不传 `runtime` 但 `enabled: true` 时，默认使用 AgsStatefulSandbox。
+   *
+   * 类型故意宽泛（unknown），避免公共类型层依赖底层实现。
+   */
+  runtime?: unknown
+  /**
+   * 沙箱粒度(AGS 实例层):
+   * - `'session'`:每个 startSession 一个独立 AGS 实例,session.abort 时 Pause。
+   *   对应 server feature/stateful-infra 的 `sandboxMode: 'isolated'`。
+   * - `'shared'`(默认):同 envId 多个 session 共享一个 AGS 实例,按需 Resume / Stop 漂移实例,
+   *   abort 不 Pause(由 AGS 按 DefaultTimeout 自动回收)。
+   *   对应 server feature/stateful-infra 的 `sandboxMode: 'shared'`。
+   *
+   * 注意:这两个 scope 是 AGS 实例粒度,与"沙箱内工作区目录"是两层正交关系。
+   * 工作区目录派生由沙箱镜像负责(/home/user/{conversationId}/ 约定),SDK 不感知。
+   */
+  scope?: 'session' | 'shared'
+  /** 沙箱生命周期（秒，传给 AGS Timeout）*/
+  ttl?: number
+  /** 启用的 sandbox capabilities */
+  capabilities?: SandboxCapabilities
+
+  /**
+   * 是否在沙箱里自动暴露 CloudBase MCP 工具集（PR #6.5）。
+   *
+   * - `true`（默认）：sandbox acquire 之后，自动调 `mcporter list cloudbase --schema`
+   *   发现 cloudbase 工具集（DB / COS / 云函数 / 静态托管 / …），
+   *   注入沙箱内 `/api/workspace/env` 凭证，然后封装为 `mcp__cloudbase__*` 工具暴露给 agent。
+   * - `false`：完全不暴露 cloudbase 工具，agent 只能用 `mcp__sandbox__*` 文件系统/shell 工具。
+   *
+   * 仅在镜像内置 mcporter + cloudbase-mcp 时生效（默认 OpenVibeCoding 公开 vibecoding 镜像）。
+   * 镜像不带这两个工具时会自动 degrade（warning，不阻塞 session 启动）。
+   */
+  cloudbaseTools?: boolean
+
+  /**
+   * 用户租户的 CloudBase 凭证（仅 PR #6.5 cloudbase MCP 工具调用时使用）。
+   *
+   * 与 sandbox 控制面凭证（AgentConfig.credentials，由平台持有）**不一定相同**——
+   * 多租户场景下沙箱本身用平台凭证起，但沙箱内 cloudbase-mcp 操作的是用户自己的资源。
+   *
+   * 优先级：
+   *   1. `userCredentials` 函数（异步回调，每次 acquire 调一次，适合多租户）
+   *   2. `userCredentials` 静态对象（适合单租户/本地开发）
+   *   3. `AgentConfig.credentials`（单租户/本地开发兜底）
+   *
+   * 缺凭证时 cloudbase 工具会 degrade（agent 仍能用文件系统 / shell 工具）。
+   */
+  userCredentials?: SandboxUserCredentials | (() => Promise<SandboxUserCredentials>)
+
+  /**
+   * Spec B 新增。控制 cwd 是否在 send 边界自动快照到 COS。
+   * - 'auto'(默认):runtime.backend === 'ags-stateful' 时启用,其他 runtime 关闭
+   * - 'enabled':强制启用 — 若 runtime 不支持则 startSession 抛 ConfigError
+   * - 'disabled':显式关闭
+   * @default 'auto'
+   * @注意 启用时要求 sandbox.scope === 'shared'(详 Spec B §1.3)
+   */
+  workspaceSnapshot?: 'auto' | 'enabled' | 'disabled'
+
+  /** snapshot HTTP timeout(ms)。默认 30_000。必须 < 600_000(镜像内部限制)*/
+  workspaceSnapshotTimeoutMs?: number
+
+  /** init(含 restore)HTTP timeout(ms)。默认 60_000。必须 < 1_200_000 */
+  workspaceInitTimeoutMs?: number
+}
+
+/**
+ * 沙箱内 cloudbase-mcp 工具调用使用的用户租户凭证。
+ *
+ * 注入到沙箱 `/api/workspace/env`：
+ *   CLOUDBASE_ENV_ID, TENCENTCLOUD_SECRETID, TENCENTCLOUD_SECRETKEY, TENCENTCLOUD_SESSIONTOKEN
+ */
+export interface SandboxUserCredentials {
+  /** CloudBase 环境 ID（不传则回退到 AgentConfig.envId） */
+  envId?: string
+  secretId: string
+  secretKey: string
+  /** 临时 token（CAM 临时凭证场景），可选 */
+  sessionToken?: string
+}
+
+export interface SandboxCapabilities {
+  /** 文件系统工具(read/write/edit/ls/glob/grep)*/
+  filesystem?: boolean
+  /** Shell 工具(bash 命令)*/
+  shell?: boolean
+}
+
+// ============================================================
+// 工具定义
+// ============================================================
+
+export interface ToolDefinition<TInput extends Record<string, unknown> = Record<string, unknown>, TOutput = unknown> {
+  name: string
+  description: string
+  /** Zod schema，必须是 zod ^4.0.0 */
+  parameters: z.ZodType<TInput>
+  /** 是否需要审批（HITL）*/
+  needsApproval?: boolean
+  /** 工具执行函数 */
+  execute: (input: TInput, ctx: ToolContext) => Promise<TOutput>
+}
+
+export interface ToolContext {
+  toolUseId: string
+  conversationId: string
+  userId: string
+  envId: string
+  /** 取消信号 */
+  signal: AbortSignal
+}
+
+// ============================================================
+// MCP server 配置
+// ============================================================
+
+/**
+ * MCP server 配置，**直接对齐 Claude Agent SDK 的 `McpServerConfig`**。
+ *
+ * 4 种形态：
+ * - `stdio`：spawn 子进程并通过 stdio pipe 通信（如 `npx @some/mcp-server`）
+ * - `http`：远程 HTTP（streamable transport）
+ * - `sse`：远程 SSE（已弃用，仅向后兼容）
+ * - `sdk`：进程内 SDK server（用 `createSdkMcpServer()` 构造，零网络开销）
+ *
+ * 形态 / 字段含义见 Claude SDK 文档。kernel 不做改写、不做封装，纯透传。
+ *
+ * @example 进程内 SDK server（推荐用于 kernel-side 的本地工具）
+ * ```ts
+ * import { createSdkMcpServer, tool } from '@anthropic-ai/claude-agent-sdk'
+ * mcpServers: {
+ *   myTools: createSdkMcpServer({
+ *     name: 'myTools',
+ *     tools: [tool('add', 'Add two numbers', { ... }, async (args) => ...)],
+ *   }),
+ * }
+ * ```
+ *
+ * @example stdio 子进程（接入 npm 包形式的 MCP server）
+ * ```ts
+ * mcpServers: {
+ *   everything: {
+ *     type: 'stdio',
+ *     command: 'npx',
+ *     args: ['-y', '@modelcontextprotocol/server-everything'],
+ *   },
+ * }
+ * ```
+ */
+export type McpServerConfig = SdkMcpServerConfig
+
+// ============================================================
+// 权限配置（HITL, PR #7.0）
+// ============================================================
+
+/**
+ * 审批决策（用户对 tool_approval_required 的响应）。
+ *
+ * 这是协议无关的超集——业务侧的 ACP / AG-UI / 自家 SSE 等协议只需要把
+ * 自己的决策枚举映射成下面的字段即可。
+ *
+ * @example 允许一次
+ *   { kind: 'allow' }                         // 等价于 { kind: 'allow', scope: 'once' }
+ *
+ * @example 本次会话内永久放行该工具
+ *   { kind: 'allow', scope: 'session' }       // 后续同名工具调用自动放行
+ *
+ * @example 允许，但替换参数（用户在 UI 上改了路径）
+ *   { kind: 'allow', updatedInput: { path: '/safe/dir' } }
+ *
+ * @example 拒绝
+ *   { kind: 'deny', reason: '用户拒绝' }
+ *
+ * @example 拒绝并打断后续推理（停止当轮 agent 运行）
+ *   { kind: 'deny', interrupt: true, reason: '危险操作' }
+ */
+export type ApprovalDecision =
+  | {
+      kind: 'allow'
+      /**
+       * 决策影响范围（默认 'once'）：
+       * - 'once'：仅本次工具调用
+       * - 'session'：本次 session 内同名工具自动放行（不再触发审批）
+       * - 'forever'：业务可自行解释为"用户偏好"长期记忆（PR #7.0 不保证持久化语义，
+       *              业务侧需自己实现跨 session 记忆）
+       */
+      scope?: 'once' | 'session' | 'forever'
+      /** 用户改写了工具参数（如修正路径） */
+      updatedInput?: Record<string, unknown>
+    }
+  | {
+      kind: 'deny'
+      scope?: 'once' | 'session'
+      reason?: string
+      /** true 时本轮 agent 运行直接结束，不让模型对这次 deny 继续思考 */
+      interrupt?: boolean
+    }
+
+/**
+ * 暂存的待审批工具调用（写入 PermissionStore 的数据形态）。
+ */
+export interface PendingApproval {
+  conversationId: string
+  toolUseId: string
+  toolName: string
+  toolInput: unknown
+  /** 创建时间戳（ms） */
+  createdAt: number
+  /** 用户已做出的决策（pending 阶段为 undefined） */
+  decision?: ApprovalDecision
+}
+
+/**
+ * 审批状态外部存储接口（让 HITL 支持分布式扩展）。
+ *
+ * - 不传 store 且已提供 credentials：kernel 默认使用 CloudBase FlexDB 分布式存储
+ * - 不传 store 且未提供 credentials：kernel 使用进程内 `InMemoryPermissionStore`（单进程可用）
+ * - 传 store：可跨节点 / 跨进程 resume；同一 conversationId 的请求可路由到任意节点
+ *
+ * 接口与 SessionStoreDriver 同套路：内置 InMemory（默认）+ CloudBaseDb（生产）+ 用户可自实现。
+ */
+export interface PermissionStore {
+  /** 写入 / 覆盖（写决策、写 pending 都走这里） */
+  put(call: PendingApproval): Promise<void>
+  /** 按 conversationId + toolUseId 取回 */
+  get(key: { conversationId: string; toolUseId: string }): Promise<PendingApproval | null>
+  /** 删除 */
+  delete(key: { conversationId: string; toolUseId: string }): Promise<void>
+}
+
+/**
+ * 工具审批匹配规则。
+ *
+ * - 字符串通配符：`'*'` 匹配任意工具；`'Bash'` 严格匹配；`'mcp__cloudbase__*'` 前缀匹配
+ * - 函数：返回 true 表示需要审批
+ *
+ * 多个字符串规则之间为"任一匹配即触发审批"。
+ */
+export type RequireApprovalRule =
+  | string
+  | string[]
+  | ((ctx: { toolName: string; input: unknown; conversationId: string }) => boolean | Promise<boolean>)
+
+export interface PermissionConfig {
+  /**
+   * 哪些工具调用需要审批。不配置 → 全部工具直接放行（PR #5 默认 bypass 行为）。
+   *
+   * @example 全部工具都要审批
+   *   { requireApproval: '*' }
+   *
+   * @example 按工具名通配符列表
+   *   { requireApproval: ['Bash', 'mcp__cloudbase__deleteCollection', 'mcp__sandbox__write'] }
+   *
+   * @example 自定义函数
+   *   { requireApproval: (ctx) => ctx.toolName === 'Bash' && /rm\s+-rf/.test(JSON.stringify(ctx.input)) }
+   */
+  requireApproval?: RequireApprovalRule
+
+  /**
+   * 审批状态存储。
+   *
+   * 不传且已提供 credentials：默认使用 CloudBase FlexDB 分布式存储；
+   * 不传且未提供 credentials：走进程内 `InMemoryPermissionStore`。
+   */
+  store?: PermissionStore
+
+  /**
+   * 默认 CloudBase FlexDB 审批状态集合前缀。
+   *
+   * 最终集合名为 `{tablePrefix}state`；默认 `oak_`。
+   * 仅在未显式传 `store` 且 kernel 自动创建 CloudBase store 时生效。
+   */
+  tablePrefix?: string
+
+  /**
+   * 审批超时（毫秒）。超过后 `respondApproval` 仍能注入决策（如果 store 还在），
+   * 但 store 里超时的 pendingApproval 会被视为 stale，hook 拒绝二次注入。
+   * 默认 1800_000（30 分钟），参考 tcb-headless-service.copilot。
+   */
+  approvalTimeoutMs?: number
+}
+
+// ============================================================
+// Hooks（业务旁路 / 改写）
+// ============================================================
+
+export interface AgentHooks {
+  onUserMessage?: (
+    ctx: UserMessageContext,
+  ) => Promise<void | { modifiedPrompt?: string }> | void | { modifiedPrompt?: string }
+
+  onToolStart?: (ctx: ToolStartContext) => Promise<void> | void
+  onToolEnd?: (ctx: ToolEndContext) => Promise<void | { updatedOutput?: unknown }> | void | { updatedOutput?: unknown }
+
+  onAgentMessage?: (ctx: AgentMessageContext) => Promise<void> | void
+  onSessionStart?: (ctx: SessionContext) => Promise<void> | void
+  onSessionEnd?: (ctx: SessionContext) => Promise<void> | void
+}
+
+export type UserMemoryConfig =
+  | boolean
+  | {
+      /**
+       * 是否启用用户级长期记忆。
+       *
+       * `userMemory: true` 是 `{ enabled: true }` 的简写。
+       */
+      enabled?: boolean
+    }
+
+export interface UserMessageContext {
+  conversationId: string
+  userId: string
+  prompt: string
+}
+
+export interface ToolStartContext extends ToolContext {
+  toolName: string
+  input: unknown
+}
+
+export interface ToolEndContext extends ToolStartContext {
+  output: unknown
+  isError: boolean
+}
+
+export interface AgentMessageContext {
+  conversationId: string
+  userId: string
+  text: string
+}
+
+export interface SessionContext {
+  conversationId: string
+  userId: string
+  envId: string
+}
+
+/**
+ * Session 持久化资源域。
+ *
+ * 当前主路径是 CloudBase 资源；具体使用哪类 CloudBase 数据库由
+ * `SessionConfig.database` 表达。
+ */
+export type SessionStoreProvider = 'cloudbase'
+
+/**
+ * CloudBase 内部可用于 session 持久化的数据资源类型。
+ *
+ * 当前内置实现为 `flexdb`，后续可扩展到 CloudBase Mongo / MySQL / PostgreSQL。
+ */
+export type CloudBaseSessionDatabase = 'flexdb' | 'mongo' | 'mysql' | 'pgsql'
+
+// ============================================================
+// Agent 配置（顶层入口）
+// ============================================================
+
+export interface AgentConfig {
+  // ── 元信息 ──────────────────────────────────────
+  name?: string
+  description?: string
+  metadata?: Record<string, unknown>
+
+  // ── 资源锚点 ────────────────────────────────────
+  envId: string
+  /** 平台凭证，用于初始化 CloudBase SDK。不传则依赖下游 SDK 自身行为或按能力报错。 */
+  credentials?: PlatformCredentials
+
+  // ── 模型 ────────────────────────────────────────
+  model: ModelInput
+  systemPrompt?: string
+
+  // ── 能力 ────────────────────────────────────────
+  tools?: ToolDefinition<any, any>[]
+  mcpServers?: Record<string, McpServerConfig>
+  /** 子 agent（handoffs） */
+  handoffs?: Agent[]
+  sandbox?: SandboxConfig
+  permissions?: PermissionConfig
+
+  // ── 会话持久化 ──────────────────────────────────
+  session?: SessionConfig
+
+  // ── 多模态附件存储 ──────────────────────────────
+  /**
+   * 附件存储配置。
+   *
+   * - 不传且已提供 credentials：默认使用 CloudBase Storage
+   * - 传 `{ pathPrefix }`：使用默认 CloudBase Storage，但覆盖上传路径前缀
+   * - 传 StorageProvider 实例：完全自定义附件存储
+   * - 不传且未提供 credentials：传入 attachments 时抛错（不支持多模态）
+   */
+  storage?: StorageConfig
+
+  // ── 平台资产层(宿主机 cwd)──────────────────
+  /**
+   * SDK 加载本机文件型资产的根目录。
+   * 影响:Skills 扫描根、项目级 CLAUDE.md 查找根、SDK 子进程 spawn cwd。
+   * 默认:OAK 自管的纯净 ephemeral 目录(无 skills、无 CLAUDE.md,等价 v0 行为)。
+   * 业务方通常传镜像内的固定路径(如 '/app/skills-bundle')。
+   *
+   * ⚠️ 安全:OAK 内部强制 settingSources 仅含 'project',永远不读 'user'(宿主机 ~/.claude)。
+   * cwd 指向 ~/.claude/ 或其子目录会被 OAK 拒绝。
+   */
+  cwd?: string
+
+  /**
+   * 启用 Claude Agent SDK 的 skills 能力。
+   * SDK 在 cwd/.claude/skills/ 下扫描 SKILL.md,按 enabled 过滤后注入到 system prompt。
+   * 不传或 enabled 未配 → skills 关闭(等价 v0 行为)。
+   *
+   * 仅当同时传了 cwd 且 cwd 下有 .claude/skills/ 目录时才生效。
+   */
+  skills?: {
+    enabled?: 'all' | string[]
+  }
+
+  // ── 用户级长期记忆(SDK 原生 .claude/ 同步)────
+  /**
+   * 用户级长期记忆。启用后:
+   *   1. SDK 子进程的 CLAUDE_CONFIG_DIR 自动按 (envId, userId) 派生到独立目录
+   *   2. 每次 session.send() 开始:从 CloudBase COS 拉取 + 算 SHA-256 baseline
+   *   3. 每次 session.send() 结束(包括 abort):diff baseline → PUT 变化 + DELETE 反向
+   *
+   * 同步范围(spec §3.4):仅 SDK 自动写入的"用户私产"
+   *   - <CLAUDE_CONFIG_DIR>/CLAUDE.md
+   *   - <CLAUDE_CONFIG_DIR>/projects/* /memory/
+   *   - <CLAUDE_CONFIG_DIR>/agent-memory/
+   * 不同步:settings.json / skills / commands / rules / agents / .claude.json 等。
+   *
+   * 默认:disabled(等价 v0 行为)。
+   *
+   * 依赖:启用时该 envId 必须开通 CloudBase COS。COS 不可达时记 warning,
+   * 不阻塞 send(graceful degrade — agent 仍可工作,只是这次不同步)。
+   *
+   * ⚠️ 前提条件(业务方需保证):同一 userId 的请求不能并发处理 —
+   * 即同一时刻不能有两个 SDK 节点同时为 alice 服务。SDK 不在并发场景下做冲突
+   * 防御。但允许 alice 这次落 node1、下次落 node2,只要两次不重叠。
+   */
+  userMemory?: UserMemoryConfig
+
+  // ── 钩子 ────────────────────────────────────────
+  hooks?: AgentHooks
+}
+
+/**
+ * 会话持久化配置。
+ *
+ * 默认行为：
+ * - 传了 `AgentConfig.credentials` 且未显式关闭时，自动使用 CloudBase FlexDB
+ *   持久化 session，表前缀默认 `oak_`，projectKey 默认 `envId`。
+ * - 未传 credentials 时保持本地临时 transcript，避免无凭证 quickstart 报错。
+ * - 传 `enabled: false` 可显式关闭默认持久化。
+ *
+ * 注意：本接口刻意不导出底层 SDK 的 `SessionStore` 类型，避免锁定 runtime。
+ *       store 对象通过 `kernel/session-store` 子模块的 `CloudBaseSessionStore`
+ *       构造，详见 README。
+ */
+export interface SessionConfig {
+  /**
+   * 是否启用 session 持久化。
+   *
+   * - `undefined`：有 credentials 时默认启用 CloudBase FlexDB；无 credentials 时不启用
+   * - `false`：显式关闭持久化
+   * - `true`：强制启用；若缺少所需配置会在 createAgent 阶段报错
+   */
+  enabled?: boolean
+
+  /**
+   * 持久化资源域。默认 `cloudbase`。
+   *
+   * 当前主路径是 CloudBase 资源；具体数据库类型由 `database` 指定。
+   */
+  provider?: SessionStoreProvider
+
+  /**
+   * CloudBase session 持久化使用的数据资源类型。默认 `flexdb`。
+   *
+   * 当前内置实现：
+   * - `flexdb`：CloudBase FlexDB，使用默认四张表
+   *
+   * 预留扩展：
+   * - `mongo` / `mysql` / `pgsql`：后续通过对应 driver 实现
+   */
+  database?: CloudBaseSessionDatabase
+
+  /**
+   * 兼容 Claude Agent SDK SessionStore 接口的 store 对象。
+   *
+   * 高级用法：
+   *   ```ts
+   *   import { CloudBaseSessionStore, CloudBaseDbDriver } from '@cloudbase/open-agent-kernel'
+   *   session: { store: new CloudBaseSessionStore({ driver: new CloudBaseDbDriver() }) }
+   *   ```
+   *
+   * 类型故意宽泛（unknown），避免公共类型层依赖底层 runtime SDK 的类型。
+   * 内部 runtime/agent-builder 会做结构性校验后传给 SDK。
+   */
+  store?: unknown
+
+  /**
+   * 默认 CloudBase FlexDB 后端的表前缀。
+   *
+   * 会生成 `{tablePrefix}sessions` / `{tablePrefix}session_entries` /
+   * `{tablePrefix}session_summaries` / `{tablePrefix}session_messages`。
+   *
+   * @default 'oak_'
+   */
+  tablePrefix?: string
+
+  /**
+   * Project key（多租户隔离）
+   * 默认：envId
+   */
+  projectKey?: string
+
+  /**
+   * 落盘策略
+   * - 'batched'（默认）：每次 turn 结束批量写
+   * - 'eager'：每帧立即写（实时性高，存储压力大）
+   */
+  flush?: 'batched' | 'eager'
+}
+
+/**
+ * CloudBase Storage 简化配置。
+ *
+ * 不传 `storage` 且提供 `credentials` 时，SDK 会自动启用默认 CloudBase Storage；
+ * 传此对象时可覆盖默认云存储路径前缀、临时 URL 有效期等资源命名细节。
+ */
+export interface CloudBaseStorageConfig {
+  /**
+   * 是否启用默认 CloudBase Storage。
+   *
+   * - `undefined` / `true`：启用
+   * - `false`：显式关闭默认 storage（传 attachments 时会报错）
+   */
+  enabled?: boolean
+  /** 当前内置 storage provider，仅支持 `cloudbase`。 */
+  provider?: 'cloudbase'
+  /**
+   * 云存储路径前缀。
+   *
+   * 实际上传路径为 `{pathPrefix}{envId}/{sessionId}/{timestamp}-{index}.{ext}`。
+   *
+   * @default 'agent-attachments/'
+   */
+  pathPrefix?: string
+  /**
+   * 临时访问 URL 有效期（秒）。
+   *
+   * @default 3600
+   */
+  urlExpiresIn?: number
+}
+
+/**
+ * 自定义附件存储 provider。
+ *
+ * 高级用户可直接传 `InMemoryStorage` / `CloudBaseStorage` 实例，或实现同形状对象。
+ */
+export interface CustomStorageProvider {
+  resolveAttachment(att: AttachmentInput, ctx: { envId: string; sessionId: string; index: number }): Promise<unknown>
+  resolveRefToUrl?(ref: unknown): Promise<string>
+}
+
+export type StorageConfig = CloudBaseStorageConfig | CustomStorageProvider
+
+// ============================================================
+// Agent / Session 接口
+// ============================================================
+
+export interface Agent {
+  readonly id: string
+  readonly name?: string
+
+  startSession(opts: SessionStartOptions): Promise<Session>
+  /** 用 session ID 或 RunState JSON 恢复会话 */
+  resumeSession(stateJsonOrConversationId: string): Promise<Session>
+
+  sessions: SessionManagement
+}
+
+export interface SessionStartOptions {
+  userId: string
+  conversationId?: string
+  title?: string
+  /** 业务自定义元数据（透传到 SessionSummary）*/
+  metadata?: Record<string, unknown>
+}
+
+export interface Session {
+  readonly id: string
+  readonly userId: string
+
+  /**
+   * 发送用户消息，返回事件流。
+   * 字符串糖：等价于 { type: 'message', content: input }
+   */
+  send(input: string | SessionInput): AsyncIterable<SessionEvent>
+
+  /**
+   * 响应工具审批（PR #7.0）。
+   *
+   * 当事件流给出 `tool_approval_required` 后，业务收集到用户决策（allow/deny/scope/...）
+   * 调本方法注入决策。kernel 把决策写入 PermissionStore，然后内部 resume 一次 SDK 运行：
+   * Hook 再次触发时从 store 读到决策并放行 / 拒绝，agent 继续往下跑。
+   *
+   * 返回的事件流是"决策注入后"的运行流（可能包含 message_delta / tool_call /
+   * tool_result / 再次的 tool_approval_required / session_idle 等）。
+   *
+   * 注意：调用方应确保同一 toolUseId 不被并发响应；重复响应会用最后一次为准。
+   */
+  respondApproval(opts: { toolUseId: string; decision: ApprovalDecision }): AsyncIterable<SessionEvent>
+
+  /** 拉取历史消息 */
+  getHistory(opts?: { limit?: number; before?: number }): Promise<MessageRecord[]>
+
+  /**
+   * 清除会话消息元数据索引（oak_session_messages）。
+   *
+   * 仅清除前端分页索引数据，不影响 SDK transcript（session 仍可继续对话）。
+   * 用途：用户在 UI 上"清除聊天记录"但保留对话上下文。
+   */
+  clearHistory(): Promise<void>
+
+  /** 序列化当前 RunState 为 JSON 字符串（用于跨进程 resume）*/
+  getState(): Promise<string>
+
+  /** 中止当前运行 */
+  abort(): Promise<void>
+
+  /** Spec B 新增。手动触发一次 workspace snapshot;workspaceSnapshot 未启用时返回 { skipped: true } */
+  snapshotWorkspace?(): Promise<{ ms: number; skipped?: boolean }>
+
+  /** Spec B 新增。查询启动 restore 的状态。null = 未启用或仍在进行中 */
+  getRestoreStatus?(): Promise<'full' | 'fresh' | 'partial' | 'failed' | null>
+}
+
+export interface SessionManagement {
+  list(opts?: { userId?: string; limit?: number; cursor?: string }): Promise<SessionSummary[]>
+  get(conversationId: string): Promise<SessionSummary | null>
+  delete(conversationId: string): Promise<void>
+}
+
+export interface SessionSummary {
+  conversationId: string
+  userId: string
+  title?: string
+  status: 'idle' | 'running' | 'requires_action' | 'archived'
+  createdAt: number
+  updatedAt: number
+  metadata?: Record<string, unknown>
+}
+
+// ============================================================
+// Session 输入（统一入口）
+// ============================================================
+
+export type SessionInput =
+  | { type: 'message'; content: string; attachments?: AttachmentInput[] }
+  /** 客户端工具结果回灌（用户自己执行 tool 后回传，v0.2+）*/
+  | { type: 'tool_result'; toolUseId: string; output: unknown; isError?: boolean }
+
+/**
+ * 附件输入（多模态）。
+ *
+ * - `file`：本地文件路径或 Buffer，kernel 内部交给 StorageProvider 处理
+ * - `url`：已有可访问的 URL（公网或带签名），kernel 直接透传
+ * - `cos`：已存在 CloudBase 云存储里的 fileId，kernel 调 getTempFileURL 拿签名 URL
+ *
+ * 实际向模型发送的形态由 StorageProvider 决定（base64 内联 / URL 引用）。
+ */
+export type AttachmentInput =
+  | { type: 'file'; source: string | Uint8Array; mimeType?: string }
+  | { type: 'url'; url: string; mimeType?: string }
+  | { type: 'cos'; fileId: string; mimeType?: string }
+
+// ============================================================
+// Session 事件流
+// ============================================================
+
+export type SessionEvent =
+  | { type: 'message_delta'; text: string }
+  | { type: 'message_complete'; text: string }
+  | {
+      type: 'tool_call'
+      toolUseId: string
+      toolName: string
+      input: unknown
+    }
+  | {
+      type: 'tool_result'
+      toolUseId: string
+      toolName: string
+      output: unknown
+      isError: boolean
+    }
+  | {
+      /**
+       * 工具调用需要用户审批（PR #7.0）。
+       *
+       * 收到此事件后，本轮 SDK 运行会自然结束（紧跟 `session_idle.requires_action`）。
+       * 业务收集到决策后调 `session.respondApproval({ toolUseId, decision })` 继续。
+       *
+       * 协议无关字段：客户端协议（ACP/AG-UI/SSE）适配只需把这些字段映射到自家协议。
+       */
+      type: 'tool_approval_required'
+      toolUseId: string
+      toolName: string
+      input: unknown
+      /**
+       * 给客户端 UI 的辅助提示，**协议无关**。
+       * - displayName：UI 按钮 / 标题用的短名
+       * - description：长描述（"will read files in ~/Downloads"）
+       * - suggestedScopes：UI 可呈现的"作用范围"选项（once/session/forever）
+       */
+      hints?: {
+        displayName?: string
+        description?: string
+        suggestedScopes?: Array<'once' | 'session' | 'forever'>
+      }
+      /**
+       * Resume token（业务可不持久化，conversationId + toolUseId 就够 resumeApproval；
+       * 此字段留作未来跨进程 RunState 持久化的扩展点）。
+       */
+      runStateJson: string
+    }
+  | {
+      type: 'handoff'
+      fromAgent: string
+      toAgent: string
+    }
+  | {
+      type: 'session_idle'
+      reason: 'completed' | 'requires_action' | 'aborted' | 'error'
+    }
+  | { type: 'error'; error: Error }
+
+// ============================================================
+// 历史消息记录（PR #4.6 扩展）
+// ============================================================
+
+/**
+ * 消息状态：前端渲染用（spinner / 灰条 / 错误提示）
+ *
+ * - `pending`：用户刚发送，等待模型响应
+ * - `streaming`：模型正在输出（流式场景，有 partial 消息时）
+ * - `done`：正常结束
+ * - `error`：发生错误
+ * - `cancel`：用户取消 / 中止
+ */
+export type MessageStatus = 'pending' | 'streaming' | 'done' | 'error' | 'cancel'
+
+/**
+ * 工具调用 / 结果状态：
+ * - `pending`：已发起，等待执行
+ * - `executing`：正在执行（可选，流式场景）
+ * - `done`：执行完成
+ * - `denied`：被 HITL 拒绝
+ * - `awaiting_approval`：等待用户审批（HITL）
+ */
+export type ToolStatus = 'pending' | 'executing' | 'done' | 'denied' | 'awaiting_approval'
+
+/**
+ * 聚合消息记录：给前端渲染用的"人类可读"格式。
+ *
+ * 与 SDK 内部的 SDKMessage（SessionStore 存的）不同：
+ * - SDKMessage 是 SDK 内部协议（含 partial、replay、compact_boundary 等十几种 subtype）
+ * - MessageRecord 是 kernel 翻译后的语义化格式，只包含前端需要的字段
+ *
+ * 两者职责：
+ * - SessionStore → SDK resume 用（重建 agent context）
+ * - HistoryStore → 前端渲染 chat UI 用（MessageRecord）
+ */
+export interface MessageRecord {
+  id: string
+  conversationId: string
+  role: 'user' | 'assistant' | 'system'
+  parts: MessagePart[]
+  status: MessageStatus
+  createdAt: number
+}
+
+export type MessagePart =
+  | { type: 'text'; text: string }
+  | { type: 'thinking'; text: string }
+  | {
+      type: 'image'
+      mimeType: string
+      /**
+       * 稳定引用：长期可解析为可访问 URL。
+       * - CloudBase 存储：`{ kind: 'cos', fileId: 'cloud://...' }`
+       * - 内联 base64：`{ kind: 'base64', dataUrl: 'data:image/png;base64,...' }`
+       * - 外部 URL：`{ kind: 'url', url: 'https://...' }`（kernel 不保证有效期）
+       */
+      ref: { kind: 'cos'; fileId: string } | { kind: 'base64'; dataUrl: string } | { kind: 'url'; url: string }
+    }
+  | {
+      type: 'tool_call'
+      toolUseId: string
+      toolName: string
+      input: unknown
+      status?: ToolStatus
+    }
+  | {
+      type: 'tool_result'
+      toolUseId: string
+      output: unknown
+      isError: boolean
+      status?: ToolStatus
+    }
+  | {
+      type: 'tool_approval_required'
+      toolUseId: string
+      toolName: string
+      input: unknown
+    }

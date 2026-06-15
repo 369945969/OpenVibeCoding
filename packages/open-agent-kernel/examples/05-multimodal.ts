@@ -1,0 +1,65 @@
+/**
+ * 05-multimodal.ts —— 多模态输入演示（图片 + 文字 → 视觉模型）
+ *
+ * 演示路径：
+ *   方式 A（默认）：传入 credentials 后，createAgent 自动使用 CloudBase Storage
+ *   方式 B（调试）：OAK_STORAGE=memory 时显式使用 InMemoryStorage
+ *
+ * 配置：examples/config.local.json（见 config.example.json）
+ *
+ * 运行：
+ *   pnpm dlx tsx packages/open-agent-kernel/examples/05-multimodal.ts
+ */
+import { getEnvId, getExampleImagePath, getExampleStorage, getModel, getPlatformCredentials } from './_shared/env.js'
+
+import * as path from 'node:path'
+import { InMemoryStorage, createAgent } from '@cloudbase/open-agent-kernel'
+
+async function main(): Promise<void> {
+  const useInMemoryStorage = getExampleStorage() === 'memory'
+  const credentials = useInMemoryStorage ? undefined : getPlatformCredentials()
+  const storage = useInMemoryStorage ? new InMemoryStorage() : undefined
+  const storageName = useInMemoryStorage ? 'InMemoryStorage' : 'CloudBaseStorage(default)'
+
+  // 默认用项目根目录的 screenshot.png（一张产品截图，模型应该能识别出 UI 元素）
+  const defaultImage = path.resolve(new URL('./', import.meta.url).pathname, 'cloud.png')
+  const imagePath = getExampleImagePath() ?? defaultImage
+
+  const agent = createAgent({
+    envId: getEnvId(),
+    ...(credentials ? { credentials } : {}),
+    // 视觉模型：需当前 CloudBase 环境已开通对应多模态模型
+    model: getModel('glm-5v-turbo'),
+    systemPrompt: 'You are a helpful image analysis assistant. Reply concisely in Chinese.',
+    ...(storage ? { storage } : {}),
+  })
+
+  console.log(`[storage] using ${storageName}`)
+  console.log(`[image] ${imagePath}`)
+
+  const session = await agent.startSession({ userId: 'demo-user' })
+
+  console.log(`\nUser: 这张图里展示了什么？请用一两句话描述关键内容。`)
+  console.log(`     [attachment: file=${path.basename(imagePath)}]`)
+  process.stdout.write('Assistant: ')
+
+  for await (const event of session.send({
+    type: 'message',
+    content: '这张图里展示了什么？请用一两句话描述关键内容。',
+    attachments: [{ type: 'file', source: imagePath }],
+  })) {
+    if (event.type === 'message_delta') process.stdout.write(event.text)
+    if (event.type === 'session_idle') console.log()
+    if (event.type === 'error') {
+      console.error('\n[error]', event.error.message)
+      return
+    }
+  }
+
+  console.log('\n--- Done ---')
+}
+
+main().catch((err) => {
+  console.error('Fatal:', err)
+  process.exit(1)
+})
