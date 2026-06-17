@@ -44,7 +44,7 @@ async function main(): Promise<void> {
   const config = loadConfig()
   const useFull = process.argv.includes('--full')
 
-  process.env.TCB_API_KEY = config.tcbApiKey
+  process.env.CLOUDBASE_APIKEY = config.tcbApiKey
 
   console.log('[kernel-beta-quickstart] SDK version:', VERSION)
   console.log('[kernel-beta-quickstart] mode:', useFull ? 'full (with credentials)' : 'minimal')
